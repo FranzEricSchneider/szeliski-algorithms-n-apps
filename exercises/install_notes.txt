@@ -1,0 +1,7 @@
+sudo apt-get install pylint
+sudo apt-get install python3-ipdb
+sudo apt-get install python3-matplotlib
+sudo apt-get install python3-numpy
+sudo apt-get install python3-pytest
+sudo apt-get install python3-scipy
+sudo pip3 install PyQt5
