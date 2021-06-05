@@ -19,14 +19,14 @@ class TestClosest:
         # First rectangle
         (numpy.array([51, 50]),   0, 0),
         (numpy.array([149, 52]),  0, 1),
-        (numpy.array([150, 150]), 0, 3),
+        (numpy.array([150, 150]), 0, 2),
         # Second rectangle
         (numpy.array([96, 100]),  1, 0),
-        (numpy.array([99, 103]),  1, 2),
+        (numpy.array([99, 103]),  1, 3),
         # Third rectangle
         (numpy.array([24, 78]),   2, 0),
-        (numpy.array([18, 139]),  2, 2),
-        (numpy.array([66, 130]),  2, 3),
+        (numpy.array([66, 130]),  2, 2),
+        (numpy.array([18, 139]),  2, 3),
     ))
     def test_closest_selection(self, point, index, match_index):
         rectangles = [
@@ -72,4 +72,4 @@ class TestClosest:
         dist, rectangle, point_index = closest(numpy.array([101, 91]), rectangles)
         assert numpy.isclose(dist, numpy.sqrt(2))
         assert rectangle is rectangles[0]
-        assert point_index == 3
+        assert point_index == 2

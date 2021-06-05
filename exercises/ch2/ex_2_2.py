@@ -57,10 +57,7 @@ class Rectangle:
         # You could simplify to original.dot(transform.T), but I think this is
         # more clear
         homogeneous = self.transform.dot(self.original_position.T).T
-        print("self.transform\n", self.transform)
-        print("homogeneous\n", homogeneous)
         normalized = homogeneous / homogeneous[:, -1].reshape((len(homogeneous), 1))
-        print("normalized\n", normalized)
         return normalized.astype(int)
 
     def __repr__(self):
