@@ -1,3 +1,4 @@
+import argparse
 import cv2
 from glob import glob
 from os.path import basename, join
@@ -24,12 +25,15 @@ PATH_MAPPING = {
 VISUALIZE_PATH = "ex_2_8_images/DETECTED"
 
 
-def get_samples(search_path):
+def get_samples(search_path, use_chromaticity=True):
     image_paths = glob(search_path)
     images = [cv2.imread(path) for path in image_paths]
-    xy_images = [pixel_chromaticity(image) for image in images]
+    if use_chromaticity:
+        sample_images = [pixel_chromaticity(image) for image in images]
+    else:
+        sample_images = [color_ratio(image) for image in images]
     # TODO: Consider overweighting samples from small images
-    samples, masks = flatten_nonzero(xy_images)
+    samples, masks = flatten_nonzero(sample_images)
     return samples, image_paths, masks
 
 
@@ -96,6 +100,15 @@ def pixel_chromaticity(image):
     return xyz[:, :, :2]
 
 
+def color_ratio(image):
+    # Normalize
+    # TODO: Figure out how to remove the 0/0 warnings
+    normalized = numpy.einsum("ijk,ij->ijk", image, 1 / numpy.sum(image, axis=2))
+    # And remove the nans of pure black
+    normalized[numpy.isnan(normalized)] = 0.0
+    return normalized
+
+
 def flatten_nonzero(images):
     """Select the non-zero pixels and flatten it all.
 
@@ -103,10 +116,10 @@ def flatten_nonzero(images):
     which is why this is done.
 
     Arguments:
-        images: list of (n, m, 2) images in xy coordinates.
+        images: list of (n, m, 2 or 3) images in xy coordinates.
 
     Returns: two-element tuple of
-        [0] (p, 2) vector flattened down from all of the images.
+        [0] (p, 2 or 3) vector flattened down from all of the images.
         [1] Lists of the masks the the samples were extracted with,
             corresponding to the incoming images
     """
@@ -116,7 +129,14 @@ def flatten_nonzero(images):
         # Get the locations where either x or y pixels have any color value
         x0 = image[:, :, 0] != 0.0
         y0 = image[:, :, 1] != 0.0
-        nonzeros = x0 | y0
+        if image.shape[2] == 2:
+            nonzeros = x0 | y0
+        elif image.shape[2] == 3:
+            z0 = image[:, :, 2] != 0.0
+            nonzeros = x0 | y0 | z0
+        else:
+            raise ValueError(f"Image had shape {image.shape}, should be (n, m, 2/3)")
+
         # Then add the latest nonzero pixels to the growing list
         if flattened is None:
             flattened = image[nonzeros]
@@ -181,7 +201,8 @@ def get_unprocessed(path):
     return raw_path
 
 
-def detect_skin(image, mean, axes, stddev_values, scalar=1.0):
+def detect_skin(image, mean, axes, stddev_values, scalar=1.0,
+                use_chromaticity=True):
     """Checks whether each xy pixel is within the detected range for "skin".
 
     In practice this makes a rectangle around the mean, along the axes. Maybe
@@ -204,15 +225,18 @@ def detect_skin(image, mean, axes, stddev_values, scalar=1.0):
     """
 
     # Get the full image in xy coordinates
-    xy_image = pixel_chromaticity(image)
+    if use_chromaticity:
+        processed_image = pixel_chromaticity(image)
+    else:
+        processed_image = color_ratio(image)
     # Center the values around the mean
-    xy_image -= mean
+    processed_image -= mean
     # Check the distance along the major and minor axes
     within_axes0 = numpy.abs(
-        numpy.einsum("ijk,k->ij", xy_image, axes[:, 0])
+        numpy.einsum("ijk,k->ij", processed_image, axes[:, 0])
     ) < scalar * stddev_values[0]
     within_axes1 = numpy.abs(
-        numpy.einsum("ijk,k->ij", xy_image, axes[:, 1])
+        numpy.einsum("ijk,k->ij", processed_image, axes[:, 1])
     ) < scalar * stddev_values[1]
     # "Skin" are those values within both axes directions
     return within_axes0 & within_axes1
@@ -231,13 +255,25 @@ def visualize_mask(path, mask, suffix):
 
 
 def main():
-    samples, paths, masks = get_samples("ex_2_8_images/PROCESSED/*jp*g")
+    parser = argparse.ArgumentParser(description='Bad skin detector.')
+    parser.add_argument(
+        '-c', '--color-ratio',
+        action='store_true',
+        help='Use color ratio instead of chromaticity'
+    )
+    args = parser.parse_args()
+
+    samples, paths, masks = get_samples(
+        "ex_2_8_images/PROCESSED/*jp*g",
+        use_chromaticity=not args.color_ratio,
+    )
     mean = numpy.mean(samples, axis=0)
     # Get covariance and the main axes
     covariance = numpy.cov(samples.T)
     cov_values, vectors = numpy.linalg.eig(covariance)
     # Hand-tuned scalar around the covariance (very unscientific)
-    scalar = 3
+    scalar = 2
+
     # THIS ENDED UP BEING TOO BROAD
     # Sqrt of variance is std deviation, so we can express ourselves in
     # multiples of stddev
@@ -257,14 +293,20 @@ def main():
     # Visualize images for which there is ground truth
     for path, mask in zip(paths, masks):
         raw_path = get_unprocessed(path)
-        detected = detect_skin(cv2.imread(raw_path), mean, vectors, cov_values, scalar)
+        detected = detect_skin(
+            cv2.imread(raw_path), mean, vectors, cov_values, scalar,
+            use_chromaticity=not args.color_ratio
+        )
         visualize_mask(raw_path, None, "ORIGINAL")
         visualize_mask(raw_path, detected, "DETECTED")
         visualize_mask(raw_path, mask, "GROUND_TRUTH")
 
     # And those without ground truth
     for raw_path in glob("ex_2_8_images/raw_only*jp*g"):
-        detected = detect_skin(cv2.imread(raw_path), mean, vectors, cov_values, scalar)
+        detected = detect_skin(
+            cv2.imread(raw_path), mean, vectors, cov_values, scalar,
+            use_chromaticity=not args.color_ratio
+        )
         visualize_mask(raw_path, None, "ORIGINAL")
         visualize_mask(raw_path, detected, "DETECTED")
 
