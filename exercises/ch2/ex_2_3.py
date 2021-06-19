@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QRubberBand
 
 
 """
-TODO
+Allows the camera to maneuver around a 3D scene
 """
 
 
@@ -21,41 +21,69 @@ WINDOW_SIZE = (1000, 500)
 # Defined transformations and related keys
 TRANSFORMATIONS = {
     # One step is 0.25 (m)
-    Qt.Key_PageUp: lambda x: T([0, 0, 0.25 * x]),
+    Qt.Key_Right:    lambda x: T([0.25 *  x, 0, 0]),
+    Qt.Key_Left:     lambda x: T([0.25 * -x, 0, 0]),
+    Qt.Key_Down:     lambda x: T([0, 0.25 *  x, 0]),
+    Qt.Key_Up:       lambda x: T([0, 0.25 * -x, 0]),
+    Qt.Key_PageUp:   lambda x: T([0, 0, 0.25 *  x]),
     Qt.Key_PageDown: lambda x: T([0, 0, 0.25 * -x]),
-    Qt.Key_Right: lambda x: T([0.25 * x, 0, 0]),
-    Qt.Key_Left: lambda x: T([0.25 * -x, 0, 0]),
-    Qt.Key_Up: lambda x: T([0, 0.25 * x, 0]),
-    Qt.Key_Down: lambda x: T([0, 0.25 * -x, 0]),
-    # One step is 0.5 (rad)
-    Qt.Key_X: lambda x: Rx(0.1 * x),
+    # One step is 0.1 (rad)
+    Qt.Key_X: lambda x: Rx(0.1 *  x),
     Qt.Key_W: lambda x: Rx(0.1 * -x),
-    Qt.Key_D: lambda x: Ry(0.1 * x),
+    Qt.Key_D: lambda x: Ry(0.1 *  x),
     Qt.Key_A: lambda x: Ry(0.1 * -x),
-    Qt.Key_E: lambda x: Rz(0.1 * x),
+    Qt.Key_E: lambda x: Rz(0.1 *  x),
     Qt.Key_Q: lambda x: Rz(0.1 * -x),
     # Just render
     Qt.Key_R: lambda x: numpy.eye(4),
 }
-# TODO: Make a more meaningful scene
 # Show a fixed scene of lines and points, allow the camera to move
 SCENE = [
-    # points
-    numpy.array([[1, 0, 1, 1.0]]),
-    numpy.array([[0.5, 0, 1, 1.0]]),
-    numpy.array([[0, 1, 1, 1.0]]),
-    numpy.array([[0, 0.5, 1, 1.0]]),
-    numpy.array([[0, 0, 1, 1.0]]),
-    # lines
-    numpy.array([[1, 0, 2, 1.0], [0, 1, 2, 1.0]]),
-    numpy.array([[0, 0, 2, 1.0], [2, 2, 2, 1.0]]),
-    # polygons
-    numpy.array([[1, 0, 3, 1.0], [0, 1, 3, 1.0], [0, 0, 3, 1.0]]),
-    numpy.array([[1, 0, 4, 1.0], [1, 1, 4, 1.0], [1, 2, 4, 1.0], [0, 1, 4, 1.0]]),
+    # pyramid of points
+    numpy.array([[-1, 1, 0, 1.0]]),
+    numpy.array([[-2, 1, 0, 1.0]]),
+    numpy.array([[-2, 2, 0, 1.0]]),
+    numpy.array([[-1, 2, 0, 1.0]]),
+    numpy.array([[-1.5, 1, 0, 1.0]]),
+    numpy.array([[-2, 1.5, 0, 1.0]]),
+    numpy.array([[-1.5, 2, 0, 1.0]]),
+    numpy.array([[-1, 1.5, 0, 1.0]]),
+    numpy.array([[-1.25, 1.25, 0.5, 1.0]]),
+    numpy.array([[-1.75, 1.75, 0.5, 1.0]]),
+    numpy.array([[-1.25, 1.75, 0.5, 1.0]]),
+    numpy.array([[-1.75, 1.25, 0.5, 1.0]]),
+    numpy.array([[-1.5, 1.5, 1, 1.0]]),
+    numpy.array([[-1, 1, 0, 1.0], [-2, 1, 0, 1.0]]),
+    numpy.array([[-2, 1, 0, 1.0], [-2, 2, 0, 1.0]]),
+    numpy.array([[-2, 2, 0, 1.0], [-1, 2, 0, 1.0]]),
+    numpy.array([[-1, 2, 0, 1.0], [-1, 1, 0, 1.0]]),
+    numpy.array([[-1, 1, 0, 1.0], [-1.5, 1.5, 1, 1.0]]),
+    numpy.array([[-2, 1, 0, 1.0], [-1.5, 1.5, 1, 1.0]]),
+    numpy.array([[-2, 2, 0, 1.0], [-1.5, 1.5, 1, 1.0]]),
+    numpy.array([[-1, 2, 0, 1.0], [-1.5, 1.5, 1, 1.0]]),
+    # building of polygons
+    numpy.array([[1, -1, 0, 1.0], [2, -1, 0, 1.0], [2, -1, 0.5, 1.0], [1, -1, 0.5, 1.0]]),
+    numpy.array([[1, -2, 0, 1.0], [2, -2, 0, 1.0], [2, -2, 0.5, 1.0], [1, -2, 0.5, 1.0]]),
+    numpy.array([[1, -1, 0, 1.0], [1, -2, 0, 1.0], [1, -2, 0.5, 1.0], [1, -1, 0.5, 1.0]]),
+    numpy.array([[2, -1, 0, 1.0], [2, -2, 0, 1.0], [2, -2, 0.5, 1.0], [2, -1, 0.5, 1.0]]),
+    numpy.array([[2, -2, 0.5, 1.0], [2, -1, 0.5, 1.0], [1, -1, 0.5, 1.0], [1, -2, 0.5, 1.0]]),
+    numpy.array([[1.75, -1.75, 0.5, 1.0], [1.75, -1.25, 0.5, 1.0], [1.5, -1.5, 0.8, 1.0]]),
+    numpy.array([[1.75, -1.75, 0.5, 1.0], [1.25, -1.75, 0.5, 1.0], [1.5, -1.5, 0.8, 1.0]]),
+    numpy.array([[1.25, -1.25, 0.5, 1.0], [1.25, -1.75, 0.5, 1.0], [1.5, -1.5, 0.8, 1.0]]),
+    numpy.array([[1.75, -1.25, 0.5, 1.0], [1.25, -1.25, 0.5, 1.0], [1.5, -1.5, 0.8, 1.0]]),
+    # road made of lines
+    numpy.array([[-1.5, 1, 0, 1.0], [-1.5, -1, 0, 1.0]]),
+    numpy.array([[-1.5, 0, 0, 1.0], [1.5, 0, 0, 1.0]]),
+    numpy.array([[1.5, 0, 0, 1.0], [1.5, -1, 0, 1.0]]),
+    # disconnected set of triangles
+    numpy.array([[-1.5, -1, 0, 1.0], [-2.25, -2, 0, 1.0], [-0.75, -1.75, 0, 1.0]]),
+    numpy.array([[-0.75, -1.25, 0.5, 1.0], [-2.25, -1.25, 0.5, 1.0], [-1.5, -2, 0.5, 1.0]]),
 ]
-# TODO
+# Create the camera matrix to translate camera-frame 3D stuff into pixels
+# See page 56 for camera matrix stuff
 # https://stackoverflow.com/questions/724219/how-to-convert-a-3d-point-into-2d-perspective-projection ?
-# TODO: Look up relationship between focal length, FOV, and aspect ratio
+# There's some relationship between focal length, FOV, and aspect ratio that I
+# won't bother digging into
 FX = 500
 FY = 500
 # Camera matrix
@@ -68,6 +96,7 @@ K = numpy.array([
 R = 10
 
 
+# Helper geometric functions
 def T(vector):
     matrix = numpy.eye(4)
     matrix[0:3, 3] = vector
@@ -103,15 +132,18 @@ def Rz(angle):
 
 class Window(QLabel):
     """Window for rendering 3D lines and points in 2D."""
-    def __init__(self, rectangles, parent=None):
+    def __init__(self, parent=None):
         QLabel.__init__(self, parent)
 
         # Origin of the camera, and its inverse
-        self.camera = T([0, 0, -2])
+        self.camera = T([0, 0, 10]).dot(Rx(numpy.pi))
         self.camera_inv = numpy.linalg.inv(self.camera)
 
         # Help text
-        print("Hit <Escape> to exit, TODO.")
+        print("Hit <Escape> to exit, and R to start the render.")
+        print("Page up/down zooms in and out")
+        print("Arrow keys move camera")
+        print("W/X, Q/E, A/D rotate the camera around its axes")
         print("")
 
     def keyPressEvent(self, event):
@@ -120,12 +152,13 @@ class Window(QLabel):
             self.close()
         elif event.key() in TRANSFORMATIONS.keys():
             transform = TRANSFORMATIONS[event.key()](1)
+            # Update the camera, the inverse, and render
             self.camera = self.camera.dot(transform)
             self.camera_inv = numpy.linalg.inv(self.camera)
             self.render()
 
     def render(self, update=True):
-        """Draws the current set of rectangles."""
+        """Draw points in the scene, sorted by distance."""
         self.setPixmap(create_pixmap())
         painter = QPainter()
         painter.begin(self.pixmap())
@@ -139,7 +172,7 @@ class Window(QLabel):
                 SCENE,
                 reverse=True,  # largest distances come first
                 key=lambda x: numpy.linalg.norm(
-                    # camera origin       average position of the points
+                    # camera origin       average position of the collection
                     self.camera[0:3, 3] - numpy.mean(x[:, 0:3], axis=0)
                 )):
             self.draw(points, painter)
@@ -147,6 +180,8 @@ class Window(QLabel):
         if update:
             self.update()
 
+    # Amazing. I love it. This does render things in the negative distance,
+    # upside down, but I like it too much to get rid of it :)
     def draw(self, world_points, painter):
         # Get points in the camera frame in 3D
         cam_points = self.camera_inv.dot(world_points.T).T
@@ -157,10 +192,11 @@ class Window(QLabel):
 
         # If it's 1D, it's a point:
         if pixels.shape[0] == 1:
-            painter.drawEllipse(pixels[0][0], pixels[0][1], R, R)
+            painter.drawEllipse(pixels[0][0] - int(R/2.0), pixels[0][1] - int(R/2.0), R, R)
         # If it's 2D, it's a line:
         elif pixels.shape[0] == 2:
             painter.drawLine(pixels[0][0], pixels[0][1], pixels[1][0], pixels[1][1])
+        # If there's a larger collection of points, polygon time
         else:
             painter.drawPolygon(
                 QPolygon([
@@ -176,48 +212,11 @@ def create_pixmap():
     return pixmap
 
 
-def closest(point, rectangles):
-    """
-    Arguments:
-        point: numpy.array two-element integer point, in the same (x, y)
-            coordinates as the window
-        rectangles: list of the Rectangle class
-    Returns: (None, None, None) if the rectangles are empty, otherwise a
-        three-element tuple of
-        (
-            pixel distance [float],
-            Rectangle class [with closest point],
-            index of closest point within Rectangle
-        )
-    """
-    if not rectangles:
-        return None, None, None
-    min_dist = 1e6
-    chosen = index = None
-    for rectangle in rectangles:
-        dist, dist_index = rectangle.min_dist(point)
-        if dist < min_dist:
-            min_dist = dist
-            chosen = rectangle
-            index = dist_index
-    return (min_dist, chosen, index)
-
-
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(description='Draw rectangles.')
-    parser.add_argument(
-        'saved_rectangles',
-        nargs='*',
-        help='Space separated paths to saved rectangles, if any'
-    )
-    args = parser.parse_args()
-
     app = QApplication([])
     random.seed()
 
-    window = Window([Rectangle.from_file(path)
-                     for path in args.saved_rectangles])
+    window = Window()
     window.setPixmap(create_pixmap())
     window.resize(*WINDOW_SIZE)
     window.show()
