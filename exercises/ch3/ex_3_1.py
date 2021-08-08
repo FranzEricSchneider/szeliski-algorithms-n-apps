@@ -193,6 +193,21 @@ def evaluate_image(baseline, processed, name, suffix, add):
     Print some by-channel stats about the given processed image, supporting
     both addition (add=True) and multiplication (add=False). Also write an
     image where the average transform has been applied to the baseline again.
+
+    When add=False then we only consider pixels where the baseline is over 10
+    (to avoid dividing by small numbers)
+
+    Arguments:
+        baseline: RGB image. THIS WILL BE MODIFIED. Pass in a copy if necessary
+        processed: Same shape as baseline, but it should be the PROCESSED
+            version of the valued stat. For example, if we are interested in
+            scale, then it should be (image / baseline)
+        name: path to the baseline image, where the only period is in the
+            filetype. The written image will be based on this
+        suffix: string, will be inserted into the name to make a derived name.
+            Needs to end with a period.
+        add: boolean, determines whether we will check for addition statistics
+            (True) or multiplication (False)
     """
     if add:
         vectors = [processed[:, :, i].flatten() for i in range(3)]

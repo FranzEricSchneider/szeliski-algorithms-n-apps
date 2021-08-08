@@ -4,6 +4,8 @@ import numpy
 import rawpy
 from scipy.ndimage import convolve
 
+from ex_3_1 import evaluate_image
+
 
 # NOTE TO SELF - eog seems to be able to view raw (dng) files, but poorly.
 # Shotwell (installed by default?) seemed to do a good job.
@@ -106,6 +108,21 @@ def main():
     # increasing visual acuity by unsharp masking
     # dynamic range compression – lighten shadow regions without blowing out
     #   highlight regions
+
+    ###########################################################################
+    # Finally, see what the scalar(?) relationship is between the demosaiced
+    # image and the camera-created jpeg. I predict that there will not just be
+    # a simple scalar relationship
+    evaluate_image(comparison.astype(float),
+                   bilinear.astype(float) / comparison,
+                   "ex_3_2/comparison.jpg",
+                   "_scales.",
+                   add=False)
+    # As expected, the scalar values are not consistent at all, there is a wide
+    # range of values
+    # R - avg: 0.574, std: 0.3542
+    # G - avg: 0.805, std: 0.4091
+    # B - avg: 0.757, std: 0.5429
 
 
 def plot_decimated_view(raw):
