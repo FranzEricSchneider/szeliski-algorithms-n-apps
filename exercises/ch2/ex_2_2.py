@@ -320,11 +320,11 @@ def closest(point, rectangles):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description='Draw rectangles.')
+    parser = argparse.ArgumentParser(description="Draw rectangles.")
     parser.add_argument(
-        'saved_rectangles',
-        nargs='*',
-        help='Space separated paths to saved rectangles, if any'
+        "saved_rectangles",
+        nargs="*",
+        help="Space separated paths to saved rectangles, if any"
     )
     args = parser.parse_args()
 
