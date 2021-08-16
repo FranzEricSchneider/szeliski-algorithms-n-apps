@@ -87,7 +87,7 @@ def process(image_paths):
             prof.enable()
             coefficients = instantiate_coefficients(history, p=P, N=N)
             prof.disable()
-            prof.dump_stats("stats_no_loop.profile")
+            prof.dump_stats("stats_rubber_meet_road.profile")
 
         # Then use that history (without image in it) to make a prediction
         # we can compare to image
@@ -114,21 +114,42 @@ def instantiate_coefficients(history, p, N):
                                dtype=float)
     histarray = numpy.array(history)
 
-    # Go through each pixel and set the coefficients
+    # TODO: Reflect this change in the tests
+    # MATRIX = numpy.zeros((history[0].shape[0], history[0].shape[1], p, p), dtype=int)
+    # VECTOR = numpy.zeros((history[0].shape[0], history[0].shape[1], p), dtype=int)
+
+    # # Go through each pixel and set the coefficients
+    # for i in range(history[0].shape[0]):
+    #     for j in range(history[0].shape[1]):
+    #         matrix, vector = construct_equations(s=histarray[:, i, j],
+    #                                              p=p,
+    #                                              N=N)
+    #         MATRIX[i, j] = matrix
+    #         VECTOR[i, j] = vector
+
+    MATRIX = numpy.zeros((history[0].shape[0], history[0].shape[1], p, p), dtype=int)
+    VECTOR = numpy.zeros((history[0].shape[0], history[0].shape[1], p), dtype=int)
+    for i in range(1, p + 1):
+        for k in range(i, p + 1):
+            MATRIX[:, :, i-1, k-1] = numpy.sum(histarray[p-i:p+N-i, :, :] * histarray[p-k:p+N-k, :, :], axis=0)
+        for k in range(0, i-1):
+            MATRIX[:, :, i-1, k] = MATRIX[:, :, k, i-1]
+        VECTOR[:, :, i-1] = -1 * numpy.sum(histarray[p:p+N, :, :] * histarray[p-i:p+N-i, :, :], axis=0)
+
+    # I REALLY wish that we could just call numpy.linalg.solve(MATRIX, VECTOR)
+    # (it looks possible) but I think we need to go pixel by pixel because
+    # due to random pixel value fluctuations some solutions will be impossible
+    # due to singular matrices
     for i in range(history[0].shape[0]):
         for j in range(history[0].shape[1]):
-            matrix, vector = construct_equations(s=histarray[:, i, j],
-                                                 p=p,
-                                                 N=N)
             try:
-                coefficients[i, j] = numpy.linalg.solve(matrix, vector)
+                coefficients[i, j] = numpy.linalg.solve(MATRIX[i, j], VECTOR[i, j])
             except numpy.linalg.LinAlgError:
                 # Sometimes the matrix will be singular, this is apparently
                 # the next best solution. This seems to be less than 5%
-                coefficients[i, j], _, _, _ = numpy.linalg.lstsq(matrix,
-                                                                 vector,
+                coefficients[i, j], _, _, _ = numpy.linalg.lstsq(MATRIX[i, j],
+                                                                 VECTOR[i, j],
                                                                  rcond=None)
-        print(i, f"0:{history[0].shape[1]}")
 
     return coefficients
 
@@ -214,19 +235,21 @@ def construct_equations(s, p, N):
 
     # TODO: Make assertions about dtype=int
 
-    matrix = []
-    vector = []
+    matrix = numpy.zeros((p, p), dtype=int)
+    vector = numpy.zeros(p, dtype=int)
 
     # Form the rows
     for i in range(1, p + 1):
-        row = []
         # And the columns within it. Note the switching of i and k, that was
         # on purpose and matches the notation in the paper. Not strictly
         # necessary but it's nice to keep everything consistent.
-        for k in range(1, p + 1):
-            row.append(phi(s=s, p=p, N=N, i=k, k=i))
-        matrix.append(row)
-        vector.append(-1 * phi(s=s, p=p, N=N, i=0, k=i))
+        # TODO: Comment on diagonality
+        for k in range(i, p + 1):
+            matrix[i-1, k-1] = phi(s=s, p=p, N=N, i=k, k=i)
+        vector[i-1] = -1 * phi(s=s, p=p, N=N, i=0, k=i)
+
+    # TODO
+    matrix = matrix + matrix.T - numpy.diag(numpy.diag(matrix))
 
     # And put these in numpy
     return (numpy.array(matrix), numpy.array(vector))
