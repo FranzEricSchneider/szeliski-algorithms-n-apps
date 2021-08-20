@@ -30,31 +30,43 @@ from scipy.stats import linregress
 
 
 Result = namedtuple("Result", ["gray", "edge", "lined"])
+Line = namedtuple("Line", ["pt1", "pt2"])
 
 
+# Size of kernel to blur with before calling canny
 BLUR_KERNEL_SIZE = (3, 3)
+# Canny parameter 1. Used to extend identified edges
 CANNY_THRESH1 = 150
+# Canny parameter 2. Used to initially find strong edges
 CANNY_THRESH2 = 220
+# Size of kernel used to close the initial edge-detected image
 CLOSE_SIZE = (5, 5)
 
-THETA_N_STEPS = 50
-DIST_N_STEPS = 150
+# Discretization of theta
+THETA_N_STEPS = 40
+# Discretization of distance (rho)
+DIST_N_STEPS = 120
 
 # Fraction of the image's pixels that it takes to turn it into a line from
 # the accumulator
+# TODO: Clean up entire thresholding process
 LINE_THRESH_FRAC = 0.005
 
-ENDPOINT_FRAC = 0.02
-
+# Side-length of the square of spaces to ignore around each peak. Should be
+# odd, so the peak can stay in the middle
 WIPE_SIZE = 3
+# Size of kernel used to close potential lines before checking connected
+# components. If it's smaller or equal to CLOSE_SIZE then it's useless
 LINE_CLOSE_SIZE = (7, 7)
+# Fraction of the corner-to-corner size of the image that a post connected
+# components line must be to keep
 MIN_LINE_FRAC = 0.1
 
 
 def main(image_dir, profile):
 
-    # TODO
-    results = []
+    # Save these algorithm parameters so that they can be easy tweaked in one
+    # unified place
     parameters = {
         "blurnel": BLUR_KERNEL_SIZE,
         "canny_thresh1": CANNY_THRESH1,
@@ -63,18 +75,21 @@ def main(image_dir, profile):
         "theta_n": THETA_N_STEPS,
         "dist_n": DIST_N_STEPS,
         "line_thresh_frac": LINE_THRESH_FRAC,
-        "endpoint_frac": ENDPOINT_FRAC,
         "wipe_size": WIPE_SIZE,
         "line_close_size": LINE_CLOSE_SIZE,
         "min_line_frac": MIN_LINE_FRAC,
+        "plot_accumulation_histogram": False,
     }
 
+    # Start profiling if the flag is set
     if profile:
         profiler = cProfile.Profile()
         profiler.enable()
 
-    for image_path in image_dir.glob("*.jp*g"):
-        print(f"{image_path}...")
+    results = []
+    for image_path in sorted(image_dir.glob("*.jp*g")):
+        print(f"Processing {image_path}...")
+
         # Read image and find the edges
         image = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2GRAY)
         # According to this it"s standard to blur before finding edges:
@@ -83,15 +98,21 @@ def main(image_dir, profile):
         edge = cv2.Canny(blurred,
                          parameters["canny_thresh1"],
                          parameters["canny_thresh2"])
-        # Try to clean up the edge image as well and make it a little simpler
-        edge = close(edge, parameters["close_size"])
 
-        lines = hough_linefinder(blurred, edge, parameters)
-        print(f"Found {len(lines)} lines")
+        # Try to clean up the edge image and make the image a little simpler
+        edge = close(edge, parameters["close_size"])
+        # Then pull out the edge pixels that have been identified
+        edgels = numpy.argwhere(edge)
+
+        # Try and find lines, then display them on a rendered image. The
+        # original image is just passed through for optional visualizations.
+        lines = hough_linefinder(image, edgels, edge.shape, parameters)
         lined = render_lines(image, lines)
 
-        results.append(Result(gray=blurred, edge=edge, lined=lined))
+        results.append(Result(gray=image, edge=edge, lined=lined))
+        print(f"Found {len(lines)} lines")
 
+    # Write out profile messages for speed-up attempts if the flag is set
     if profile:
         profiler.disable()
         filename = f"profile_{int(time.time()*1e6)}.snakeviz"
@@ -110,71 +131,47 @@ def close(image, size):
     return image
 
 
-# TODO: Try to speed this up
-def hough_linefinder(image, edge_image, parameters):
+def hough_linefinder(image, edgels, image_shape, parameters):
 
-    accumulator = numpy.empty((parameters["theta_n"],
-                               parameters["dist_n"]), dtype=object)
-    for i in numpy.ndindex(accumulator.shape):
-        accumulator[i] = []
-
-    thetas = [
-        (theta, numpy.cos(theta), numpy.sin(theta))
-        for theta in numpy.linspace(-numpy.pi/2,
-                                    numpy.pi/2,
-                                    parameters["theta_n"])
-    ]
-    thetas[parameters["theta_n"] // 2] = (0.0, 1.0, 0.0)
-
-    # TODO
-    max_dist = int(numpy.linalg.norm(edge_image.shape))
-    offset = max_dist / parameters["dist_n"]
-    dist_values = numpy.linspace(
-        -max_dist + offset,
-        max_dist - offset,
-        parameters["dist_n"],
-    )
+    # Create the subdivision of the angle values. Pre-calculate the cos and
+    # sine values to save replication later.
+    thetas = numpy.array([(theta, numpy.cos(theta), numpy.sin(theta))
+                          for theta in numpy.linspace(-numpy.pi/2,
+                                                      numpy.pi/2,
+                                                      parameters["theta_n"])])
+    # Don't create subdivided distance values, instead create the values
+    # necessary to take a calculated distance and figure out how far along the
+    # subdivided vector it should land.
+    max_dist = int(numpy.linalg.norm(image_shape))
     dist_slope = (parameters["dist_n"] - 1) / (2 * max_dist)
 
-    # TODO: Explain
-    all_values = []
-    for edgel in numpy.argwhere(edge_image):
-        for i, (theta, cos, sin) in enumerate(thetas):
-            # This took me a while to get, but it works if you define theta
-            # starting from +x to the *perpendicular* line, then you see that
-            # (y = -x cos / sin + dist / sin) works out exactly like mx + b,
-            # where a 90deg triangle is formed with th y-axis, making
-            # b = dist / sin. Then you rearrange that line formula to get dist.
-            dist = edgel[0] * cos + edgel[1] * sin
-            # Figure out which discretized dist value is closest to this edgel
-            j = int(dist_slope * (dist + max_dist) + 0.5)
+    # Fill the discfretized accumulator based on angle/distance representations
+    # for all of the edge pixels.
+    accumulator = sort_into_bins(
+        edgels, thetas, dist_slope, max_dist, parameters
+    )
 
-            accumulator[i, j].append(edgel)
-
-            all_values.append([theta, dist])
-
-            # display_pix_line(image, edgel, theta, dist)
-
-    all_values = numpy.array(all_values)
-
-    # TODO: Explain
-    # TODO: Function?
+    # Take the accumulator, where specific pixels are saved, and make a more
+    # succint representation where we just count occurences. They'll both be
+    # useful.
     num_accumulated = numpy.zeros(accumulator.shape, dtype=int)
     for i in numpy.ndindex(accumulator.shape):
         num_accumulated[i] = len(accumulator[i])
 
-    # pyplot.imshow((num_accumulated * 255.0 / numpy.max(num_accumulated)).astype(numpy.uint8))
-    # pyplot.show()
+    # Plots the (theta, distance) accumulation distribution
+    if parameters["plot_accumulation_histogram"]:
+        scalar = 255.0 / numpy.max(num_accumulated)
+        pyplot.imshow((num_accumulated * scalar).astype(numpy.uint8))
+        pyplot.xlabel("Theta (-90 to 90 deg)")
+        pyplot.ylabel(f"Distance / rho (0 to {max_dist} pixels)")
+        pyplot.title("Theta vs. Distance distribution")
+        pyplot.show()
 
-    # pyplot.plot(all_values[:, 0], all_values[:, 1], 'o', markersize=2, alpha=0.05)
-    # pyplot.xlabel("Theta (rad)")
-    # pyplot.ylabel("Dist (px)")
-    # pyplot.show()
-
-    # TODO: This is trash
+    # TODO: This is trash. Come up with another mechanism. Maybe step through
+    # things in a sorted manner and don't use roi at all?
     threshold = numpy.max([numpy.min([
         0.9 * numpy.max(num_accumulated),
-        numpy.product(edge_image.shape) * parameters["line_thresh_frac"],
+        numpy.product(image_shape) * parameters["line_thresh_frac"],
     ]), sorted(num_accumulated.flatten())[-20]])
     roi = num_accumulated >= threshold
 
@@ -189,33 +186,33 @@ def hough_linefinder(image, edge_image, parameters):
             peaks.append(peak)
 
     lines = []
-    class Line:
-        def __init__(self, pt1, pt2):
-            self.pt1 = pt1
-            self.pt2 = pt2
-
-        def __repr__(self):
-            return f"{self.pt1}, {self.pt2}"
-
     for peak in peaks:
 
-        # TODO: Talk about 90 degree shift, and probably clean up
+        # Grab the pixels that were associated with this peak
+        edgels = numpy.array(accumulator[tuple(peak)])
+
+        # IMPORTANT: Theta was initially defined from the X axis (axis 0)
+        # relative to the PERPENDICULAR line, not to the actual line across the
+        # image. In order to start reasoning about the line across the image we
+        # need to do a little 90 degree rotation from theta.
         cos, sin = thetas[peak[0]][1:]
         direction = numpy.array([sin, -cos])
 
-        edgels = numpy.array(accumulator[tuple(peak)])
-
-        TODO1 = numpy.zeros(image.shape, dtype=numpy.uint8)
-        TODO1[edgels[:, 0], edgels[:, 1]] = 255
-        TODO1 = close(TODO1, parameters["line_close_size"])
+        # Create a mask of the identified line (peak in the histogram) and
+        # close holes to a parameter specified degree. Then see which
+        # components are connected, and only save/use the large ones.
+        line_mask = numpy.zeros(image_shape, dtype=numpy.uint8)
+        line_mask[edgels[:, 0], edgels[:, 1]] = 255
+        line_mask = close(line_mask, parameters["line_close_size"])
         (num_components,
          labels,
          stats,
-         centroids) = cv2.connectedComponentsWithStats(TODO1,
+         centroids) = cv2.connectedComponentsWithStats(line_mask,
                                                        connectivity=4,
                                                        ltype=cv2.CV_32S)
 
-        # plot_image = TODO1.copy()
+        # # Visualize the connected component process
+        # plot_image = line_mask.copy()
         # # Columns go (left, top, width, height, area). Skip the first label
         # # because it is background
         # for left, top, width, height, _ in stats[1:]:
@@ -225,72 +222,103 @@ def hough_linefinder(image, edge_image, parameters):
         #                   color=175,
         #                   thickness=1)
         # pyplot.imshow(plot_image)
+        # pyplot.title("Connected components for this peak/line candidate")
         # pyplot.show()
 
+        # Go through connected components and only keep components that are
+        # long enough
         edgel_groups = []
         min_line_length = max_dist * parameters["min_line_frac"]
-        for label, stat in zip(range(1, len(stats)), stats[1:]):
+        for i, stat in enumerate(stats[1:]):
+            # Columns go (left, top, width, height, area), so norm([2:4]) is
+            # the corner to corner distance of (width, height)
             if numpy.linalg.norm(stat[2:4]) > min_line_length:
-                edgel_groups.append(numpy.argwhere(labels == label))
+                edgel_groups.append(numpy.argwhere(labels == i+1))
 
+        # Make each connected group into a separate line
         for group in edgel_groups:
-            ordered = numpy.argsort(direction.dot(group.T))
-            group_size = int(numpy.ceil(len(group) * parameters["endpoint_frac"]))
-            end1 = numpy.mean(group[ordered[:group_size]], axis=0)
-            end2 = numpy.mean(group[ordered[-group_size:]], axis=0)
+            # Find the center of the group
             center = numpy.mean(group, axis=0)
-            pt1 = numpy.round(center + direction * direction.dot(end1 - center)).astype(int)
-            pt2 = numpy.round(center + direction * direction.dot(end2 - center)).astype(int)
-
-            line = Line(pt1, pt2)
-
-            # display_px_forming_line(image, group, line, thetas[peak[0]], dist_values[peak[1]])
-
-            # # I had this baffling thing where you'd have this vertical string of
-            # # points separated by a small x value, e.g. [(200, 100), (200, 150),
-            # # (200, 200), (202, 100), (202, 150), (202, 200)] and the best line
-            # # for it clearly would be a vertical line down the center, however, it
-            # # was fit essentially horizontal (m=0.6, b=50). Trash. But somehow it
-            # # works for horizontal collections?
-            # line = linregress(group[:, 0], group[:, 1])
-            # pyplot.plot(group[:, 0], group[:, 1], 'ro')
-            # pyplot.title(f"{line}")
-            # pyplot.show()
-
+            # Then find the furthest points in both directions *along* the
+            # identified direction
+            ordered = numpy.argsort(direction.dot(group.T))
+            # Use the center and the extents to construct a line that reaches
+            # to the furthest extents while still staying along the identified
+            # angle and not getting pulled sideways by area points
+            points = [
+                numpy.round(
+                    center + \
+                    direction * direction.dot(group[ordered[i]] - center)
+                ).astype(int)
+                for i in [0, -1]
+            ]
+            line = Line(*points)
             lines.append(line)
+
+            # # Display which pixels ended up in this line
+            # display_px_forming_line(
+            #     image,
+            #     group,
+            #     line,
+            #     thetas[peak[0]][0],
+            #     j_to_dist(peak[1], dist_slope, max_dist),
+            # )
 
     return lines
 
 
-def display_pix_line(image, edgel, theta, dist):
-    # Just give up on these for now
-    if abs(numpy.sin(theta)) < 1e-9:
-        return
-    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-    cv2.circle(img=image, center=tuple(reversed(edgel)), radius=3, color=(255, 0, 0), thickness=-1)
-    m = -numpy.cos(theta) / numpy.sin(theta)
-    b = dist / numpy.sin(theta)
-    # Remember, cv2.line defines (x, y) backwards from how I do
-    image = cv2.line(
-        image,
-        pt1=(int(b), 0),
-        pt2=(int(m * image.shape[0] + b), image.shape[0]),
-        color=(0, 255, 0),
-        thickness=1,
-    )
-    pyplot.imshow(image)
-    pyplot.title(f"pixel: {edgel}, theta: {theta} rad, dist: {dist} px")
-    pyplot.show()
+def j_to_dist(j, dist_slope, max_dist):
+    """Figure out what the approx distance value would be for this index."""
+    return (j / dist_slope) - max_dist
+
+
+def sort_into_bins(edgels, thetas, dist_slope, max_dist, parameters):
+    """
+    Fill the discfretized accumulator based on angle/distance representations
+    for all of the edge pixels.
+    """
+
+    # Although this is a complicated line, it's important to keep as one line
+    # because of how large the matrices are. We don't want to save intermediate
+    # values.
+    # First off, it's important to know that thetas[:, 1:] is an (n, 2) array
+    # of (cos(theta), sin(theta)) values. distance = edgels.dot([cos, sin]) took
+    # me a while to get, but it works if you define theta starting from +x to
+    # the *perpendicular* line, then you see that
+    # (y = -x cos / sin + dist / sin) works out exactly like mx + b, where a
+    # 90deg triangle is formed with th y-axis, making b = dist / sin. Then you
+    # rearrange that line formula to get dist.
+    # Then slope and max_dist stuff is to figure out which discretized dist
+    # value is most appropriate for this line.
+    j_matrix = (
+        dist_slope * (edgels.dot(thetas[:, 1:].T) + max_dist) + 0.5
+    ).astype(int)
+
+    accumulator = numpy.empty((parameters["theta_n"],
+                               parameters["dist_n"]), dtype=object)
+    for i in numpy.ndindex(accumulator.shape):
+        accumulator[i] = []
+    # TODO: This takes all the time in the process, basically. Maybe speed it
+    # up later if possible? Perhaps by only saving a count and re-extracting
+    # edgels as needed?
+    for edgel, j_row in zip(edgels, j_matrix):
+        for i, j in enumerate(j_row):
+            accumulator[i, j].append(edgel)
+
+    return accumulator
 
 
 def display_px_forming_line(image, edgels, line, theta, dist):
+    """Display the pixels that went into this line candidate."""
     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    # Color each consituent pixel
     for edgel in edgels:
         cv2.circle(img=image,
                    center=tuple(reversed(edgel)),
                    radius=1,
                    color=(255, 0, 0),
                    thickness=-1)
+    # Then create larger circles for the actually-chosen line endpoints
     for pt in [line.pt1, line.pt2]:
         cv2.circle(img=image,
                    center=tuple(reversed(pt)),
@@ -298,12 +326,12 @@ def display_px_forming_line(image, edgels, line, theta, dist):
                    color=(0, 0, 255),
                    thickness=-1)
     pyplot.imshow(image)
-    print(f"theta: {theta} rad, dist: {dist} px")
-    pyplot.title(f"theta: {theta} rad, dist: {dist} px")
+    pyplot.title(f"theta: {theta:.3f} rad, dist: {dist:.1f} px")
     pyplot.show()
 
 
 def render_lines(image, lines):
+    """Render the given lines onto an image."""
     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     for line in lines:
         # Remember, cv2.line defines (x, y) backwards from how I do
@@ -314,55 +342,44 @@ def render_lines(image, lines):
             color=(255, 0, 0),
             thickness=1,
         )
-        # image = cv2.line(
-        #     image,
-        #     pt1=(int(line.intercept), 0),
-        #     pt2=(int(image.shape[0] * line.slope + line.intercept), image.shape[0]),
-        #     color=(255, 0, 0),
-        #     thickness=2,
-        # )
     return image
 
 
 def display(results):
-    # TODO: Resolve with color
+    """
+    This will be a bit unusual, but display all processed images onto one big
+    stiched together picture board. The goal is to be able to easily zoom in
+    and see whatever, while having all output accessible at once.
+    """
+
+    # Stack each set of results vertically
+    stacks = [
+        numpy.vstack([result.lined,
+                      cv2.cvtColor(result.edge, cv2.COLOR_GRAY2RGB)])
+        for result in results
+    ]
+
+    # Use the largest image in each direction as a template and overlay each of
+    # these stacks onto a black background
     max_0 = max([result.gray.shape[0] for result in results])
     max_1 = max([result.gray.shape[1] for result in results])
-    stacks = [
-        numpy.vstack([result.gray, result.edge])
-        for result in results
-    ]
     for i in range(len(stacks)):
         stack = stacks[i]
-        fullsize = numpy.zeros((2 * max_0, max_1), dtype=numpy.uint8)
+        fullsize = numpy.zeros((2 * max_0, max_1, 3), dtype=numpy.uint8)
         fullsize[:stack.shape[0], :stack.shape[1]] = stack
         stacks[i] = fullsize
-    figure1, axis1 = pyplot.subplots(1, 1)
-    axis1.imshow(numpy.hstack(stacks))
 
-    # TODO: resolve with black and white
-    stacks = [
-        numpy.vstack([result.lined])
-        for result in results
-    ]
-    for i in range(len(stacks)):
-        stack = stacks[i]
-        fullsize = numpy.zeros((max_0, max_1, 3), dtype=numpy.uint8)
-        fullsize[:stack.shape[0], :stack.shape[1]] = stack
-        stacks[i] = fullsize
-    figure2, axis2 = pyplot.subplots(1, 1)
-    axis2.imshow(numpy.hstack(stacks))
-
+    pyplot.imshow(numpy.hstack(stacks))
     pyplot.show()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Get foreground from video.")
-    parser.add_argument("image",
-                        help="Path to folder with imX.jpg.",
+    parser.add_argument("directory",
+                        help="Path to directory with imX.jpg images.",
                         type=Path)
     parser.add_argument("-p", "--profile",
                         help="Capture profile information of the process.",
                         action="store_true")
     args = parser.parse_args()
-    main(image_dir=args.image, profile=args.profile)
+    main(image_dir=args.directory, profile=args.profile)
