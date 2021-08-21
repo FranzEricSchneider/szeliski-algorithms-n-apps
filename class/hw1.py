@@ -8,30 +8,39 @@ Looked at the explanations here but didn't use the code:
 
 Also this:
     https://medium.com/@tomasz.kacmajor/hough-lines-transform-explained-645feda072ab
+
+I think this is at a pretty good point. A couple of things that could be
+improved:
+1) The thresholding is nonsense and could use a legitimate mechanism
+2) Some sort of notion of "side to side points are BAD, not good" would be
+   extremely helpful in finding the thin lines that the human eye wants
+3) Some sort of splitting-then-reweighting would help fight the issue of "find
+   a mass of points across the whole image, call it a peak, then split it into
+   multiple shitty lines". So much time is spent on the accumulator that I bet
+   an extra processing loop would hardly be noticed. Would interact with the
+   thresholding.
 """
-
-
-# OVERALL TODOS
-# 1) Get this running a lot faster
-# 2) Clean the heck up
-# 3) Make a mechanism to loop with different parameters
 
 
 import argparse
 from collections import namedtuple
 import cProfile
 from matplotlib import pyplot
+from matplotlib.widgets import Slider, Button
 from pathlib import Path
 import time
 
 import cv2
 import numpy
 from scipy.stats import linregress
+import sys
 
 
 Result = namedtuple("Result", ["gray", "edge", "lined"])
 Line = namedtuple("Line", ["pt1", "pt2"])
 
+# Set all figures to be large
+pyplot.rcParams["figure.figsize"] = (20, 10)
 
 # Size of kernel to blur with before calling canny
 BLUR_KERNEL_SIZE = (3, 3)
@@ -78,48 +87,55 @@ def main(image_dir, profile):
         "wipe_size": WIPE_SIZE,
         "line_close_size": LINE_CLOSE_SIZE,
         "min_line_frac": MIN_LINE_FRAC,
-        "plot_accumulation_histogram": False,
+        "plot_histogram": False,
+        "plot_connected": False,
+        "plot_px_in_line": False,
     }
 
-    # Start profiling if the flag is set
-    if profile:
-        profiler = cProfile.Profile()
-        profiler.enable()
+    while True:
 
-    results = []
-    for image_path in sorted(image_dir.glob("*.jp*g")):
-        print(f"Processing {image_path}...")
+        # Start profiling if the flag is set
+        if profile:
+            profiler = cProfile.Profile()
+            profiler.enable()
 
-        # Read image and find the edges
-        image = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2GRAY)
-        # According to this it"s standard to blur before finding edges:
-        # https://datacarpentry.org/image-processing/06-blurring/
-        blurred = cv2.GaussianBlur(image, parameters["blurnel"], sigmaX=0)
-        edge = cv2.Canny(blurred,
-                         parameters["canny_thresh1"],
-                         parameters["canny_thresh2"])
+        results = []
+        for image_path in sorted(image_dir.glob("*.jp*g")):
+            print(f"Processing {image_path}...")
 
-        # Try to clean up the edge image and make the image a little simpler
-        edge = close(edge, parameters["close_size"])
-        # Then pull out the edge pixels that have been identified
-        edgels = numpy.argwhere(edge)
+            # Read image and find the edges
+            image = cv2.cvtColor(cv2.imread(str(image_path)),
+                                 cv2.COLOR_BGR2GRAY)
+            # According to this it"s standard to blur before finding edges:
+            # https://datacarpentry.org/image-processing/06-blurring/
+            blurred = cv2.GaussianBlur(image, parameters["blurnel"], sigmaX=0)
+            edge = cv2.Canny(blurred,
+                             parameters["canny_thresh1"],
+                             parameters["canny_thresh2"])
 
-        # Try and find lines, then display them on a rendered image. The
-        # original image is just passed through for optional visualizations.
-        lines = hough_linefinder(image, edgels, edge.shape, parameters)
-        lined = render_lines(image, lines)
+            # Try to clean up the edge image and make the image a bit simpler
+            edge = close(edge, parameters["close_size"])
+            # Then pull out the edge pixels that have been identified
+            edgels = numpy.argwhere(edge)
 
-        results.append(Result(gray=image, edge=edge, lined=lined))
-        print(f"Found {len(lines)} lines")
+            # Try and find lines, then display them on a rendered image. The
+            # original image is just passed through for optional visualizations
+            lines = hough_linefinder(image, edgels, edge.shape, parameters)
+            lined = render_lines(image, lines)
 
-    # Write out profile messages for speed-up attempts if the flag is set
-    if profile:
-        profiler.disable()
-        filename = f"profile_{int(time.time()*1e6)}.snakeviz"
-        profiler.dump_stats(filename)
-        print(f"Wrote profile stats to {filename}")
+            results.append(Result(gray=image, edge=edge, lined=lined))
+            print(f"Found {len(lines)} lines")
 
-    display(results)
+        # Write out profile messages for speed-up attempts if the flag is set
+        if profile:
+            profiler.disable()
+            filename = f"profile_{int(time.time()*1e6)}.snakeviz"
+            profiler.dump_stats(filename)
+            print(f"Wrote profile stats to {filename}")
+
+        # Display the image and ask whether the user wants to try again with
+        # any altered parameters
+        parameters = display(results, parameters)
 
 
 def close(image, size):
@@ -159,7 +175,7 @@ def hough_linefinder(image, edgels, image_shape, parameters):
         num_accumulated[i] = len(accumulator[i])
 
     # Plots the (theta, distance) accumulation distribution
-    if parameters["plot_accumulation_histogram"]:
+    if parameters["plot_histogram"]:
         scalar = 255.0 / numpy.max(num_accumulated)
         pyplot.imshow((num_accumulated * scalar).astype(numpy.uint8))
         pyplot.xlabel("Theta (-90 to 90 deg)")
@@ -211,19 +227,20 @@ def hough_linefinder(image, edgels, image_shape, parameters):
                                                        connectivity=4,
                                                        ltype=cv2.CV_32S)
 
-        # # Visualize the connected component process
-        # plot_image = line_mask.copy()
-        # # Columns go (left, top, width, height, area). Skip the first label
-        # # because it is background
-        # for left, top, width, height, _ in stats[1:]:
-        #     cv2.rectangle(plot_image,
-        #                   pt1=(left, top),
-        #                   pt2=(left + width, top + height),
-        #                   color=175,
-        #                   thickness=1)
-        # pyplot.imshow(plot_image)
-        # pyplot.title("Connected components for this peak/line candidate")
-        # pyplot.show()
+        # Visualize the connected component process
+        if parameters["plot_connected"]:
+            plot_image = line_mask.copy()
+            # Columns go (left, top, width, height, area). Skip the first label
+            # because it is background
+            for left, top, width, height, _ in stats[1:]:
+                cv2.rectangle(plot_image,
+                              pt1=(left, top),
+                              pt2=(left + width, top + height),
+                              color=175,
+                              thickness=1)
+            pyplot.imshow(plot_image)
+            pyplot.title("Connected components for this peak/line candidate")
+            pyplot.show()
 
         # Go through connected components and only keep components that are
         # long enough
@@ -255,14 +272,15 @@ def hough_linefinder(image, edgels, image_shape, parameters):
             line = Line(*points)
             lines.append(line)
 
-            # # Display which pixels ended up in this line
-            # display_px_forming_line(
-            #     image,
-            #     group,
-            #     line,
-            #     thetas[peak[0]][0],
-            #     j_to_dist(peak[1], dist_slope, max_dist),
-            # )
+            # Display which pixels ended up in this line
+            if parameters["plot_px_in_line"]:
+                display_px_forming_line(
+                    image,
+                    group,
+                    line,
+                    thetas[peak[0]][0],
+                    j_to_dist(peak[1], dist_slope, max_dist),
+                )
 
     return lines
 
@@ -340,17 +358,21 @@ def render_lines(image, lines):
             pt1=tuple(reversed(line.pt1)),
             pt2=tuple(reversed(line.pt2)),
             color=(255, 0, 0),
-            thickness=1,
+            thickness=2,
         )
     return image
 
 
-def display(results):
+def display(results, parameters):
     """
     This will be a bit unusual, but display all processed images onto one big
     stiched together picture board. The goal is to be able to easily zoom in
     and see whatever, while having all output accessible at once.
     """
+
+    figure, axis = pyplot.subplots()
+    axis.margins(x=0)
+    pyplot.subplots_adjust(left=0.02, right=1.0, top=1, bottom=0.3)
 
     # Stack each set of results vertically
     stacks = [
@@ -370,7 +392,174 @@ def display(results):
         stacks[i] = fullsize
 
     pyplot.imshow(numpy.hstack(stacks))
+
+    # Then go through a complicated series of definitions for sliders that can
+    # Be used to adjust parameters. When the button is clicked we will update
+    # the parameters according to slider values, close the window, and loop
+    color = 'lightgoldenrodyellow'
+
+    # TODO: Refactor
+    x0 = 0.08
+    x1 = 0.43
+    x2 = 0.78
+    width = 0.2
+    height = 0.04
+    blur = Slider(
+        ax=pyplot.axes([x0, 0.2, width, height], facecolor=color),
+        label="Blur Kernel (3-9)",
+        valmin=3,
+        valmax=9,
+        valfmt="%1.0f",
+        valinit=parameters["blurnel"][0],
+        dragging=False,
+        valstep=2,
+    )
+    canny1 = Slider(
+        ax=pyplot.axes([x0, 0.15, width, height], facecolor=color),
+        label="Canny1 (20-250)",
+        valmin=20,
+        valmax=250,
+        valfmt="%1.0f",
+        valinit=parameters["canny_thresh1"],
+        dragging=False,
+        valstep=10,
+    )
+    canny2 = Slider(
+        ax=pyplot.axes([x0, 0.1, width, height], facecolor=color),
+        label="Canny2 (20-250)",
+        valmin=20,
+        valmax=250,
+        valfmt="%1.0f",
+        valinit=parameters["canny_thresh2"],
+        dragging=False,
+        valstep=10,
+    )
+    n_theta = Slider(
+        ax=pyplot.axes([x0, 0.05, width, height], facecolor=color),
+        label="Theta N (20-300)",
+        valmin=20,
+        valmax=300,
+        valfmt="%1.0f",
+        valinit=parameters["theta_n"],
+        dragging=False,
+        valstep=10,
+    )
+    n_dist = Slider(
+        ax=pyplot.axes([x0, 0, width, height], facecolor=color),
+        label="Dist N (80-500)",
+        valmin=80,
+        valmax=500,
+        valfmt="%1.0f",
+        valinit=parameters["dist_n"],
+        dragging=False,
+        valstep=10,
+    )
+    close_kern = Slider(
+        ax=pyplot.axes([x1, 0.2, width, height], facecolor=color),
+        label="Close Kernel (3-9)",
+        valmin=3,
+        valmax=9,
+        valfmt="%1.0f",
+        valinit=parameters["close_size"][0],
+        dragging=False,
+        valstep=2,
+    )
+    thresh = Slider(
+        ax=pyplot.axes([x1, 0.15, width, height], facecolor=color),
+        label="~Line Thresh~ (0-0.05)",
+        valmin=0,
+        valmax=0.05,
+        valfmt="%1.3f",
+        valinit=parameters["line_thresh_frac"],
+        dragging=True,
+    )
+    wipe_kern = Slider(
+        ax=pyplot.axes([x1, 0.1, width, height], facecolor=color),
+        label="Wipe Area (3-11)",
+        valmin=3,
+        valmax=11,
+        valfmt="%1.0f",
+        valinit=parameters["wipe_size"],
+        dragging=False,
+        valstep=2,
+    )
+    line_close_kern = Slider(
+        ax=pyplot.axes([x1, 0.05, width, height], facecolor=color),
+        label="Line Close (3-11)",
+        valmin=3,
+        valmax=11,
+        valfmt="%1.0f",
+        valinit=parameters["line_close_size"][0],
+        dragging=False,
+        valstep=2,
+    )
+    min_frac = Slider(
+        ax=pyplot.axes([x1, 0, width, height], facecolor=color),
+        label="Min Frac (0-0.5)",
+        valmin=0,
+        valmax=0.5,
+        valfmt="%1.3f",
+        valinit=parameters["min_line_frac"],
+    )
+    plot_hist = Slider(
+        ax=pyplot.axes([x2, 0.2, width, height], facecolor=color),
+        label="Plot Hist (n/y)",
+        valmin=0,
+        valmax=1,
+        valfmt="%1.0f",
+        valinit=parameters["plot_histogram"],
+        valstep=1,
+    )
+    plot_conn = Slider(
+        ax=pyplot.axes([x2, 0.15, width, height], facecolor=color),
+        label="Plot Connected (n/y)",
+        valmin=0,
+        valmax=1,
+        valfmt="%1.0f",
+        valinit=parameters["plot_connected"],
+        valstep=1,
+    )
+    plot_line = Slider(
+        ax=pyplot.axes([x2, 0.1, width, height], facecolor=color),
+        label="Plot Line (n/y)",
+        valmin=0,
+        valmax=1,
+        valfmt="%1.0f",
+        valinit=parameters["plot_px_in_line"],
+        valstep=1,
+    )
+
+    def recreate(_):
+        parameters["blurnel"] = (int(blur.val), ) * 2
+        parameters["canny_thresh1"] = int(canny1.val)
+        parameters["canny_thresh2"] = int(canny2.val)
+        parameters["close_size"] = (int(close_kern.val), ) * 2
+        parameters["theta_n"] = int(n_theta.val)
+        parameters["dist_n"] = int(n_dist.val)
+        parameters["line_thresh_frac"] = thresh.val
+        parameters["wipe_size"] = int(wipe_kern.val)
+        parameters["line_close_size"] = (int(line_close_kern.val), ) * 2
+        parameters["min_line_frac"] = min_frac.val
+        parameters["plot_histogram"] = bool(plot_hist.val)
+        parameters["plot_connected"] = bool(plot_conn.val)
+        parameters["plot_px_in_line"] = bool(plot_line.val)
+        pyplot.close()
+        print("=" * 80)
+    loop_button = Button(
+        pyplot.axes([0.7, 0.025, 0.08, 0.04]), "Loop", color=color
+    )
+    loop_button.on_clicked(recreate)
+
+    def stop(_):
+        pyplot.close()
+        sys.exit(0)
+    stop_button = Button(
+        pyplot.axes([0.8, 0.025, 0.08, 0.04]), "Stop", color="r"
+    )
+    stop_button.on_clicked(stop)
+
     pyplot.show()
+    return parameters
 
 
 if __name__ == "__main__":
