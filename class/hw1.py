@@ -19,6 +19,10 @@ improved:
    multiple shitty lines". So much time is spent on the accumulator that I bet
    an extra processing loop would hardly be noticed. Would interact with the
    thresholding.
+4) Do a better job of explaining and tuning the parameters would be nice
+5) Maybe a way to loop on a specific image?
+6) Doing smarter edge detection (e.g. based on the image) could be extremely
+   helpful (garbage in garbage out)
 """
 
 
