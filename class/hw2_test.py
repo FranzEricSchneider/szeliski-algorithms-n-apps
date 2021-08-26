@@ -1,6 +1,8 @@
 import numpy
+import pytest
+import types
 
-from hw2 import blur, difference, downsample
+from hw2 import blur, differences, downsample, extremities
 
 
 def test_downsample():
@@ -93,7 +95,7 @@ def test_blur():
     ]))
 
 
-def test_difference():
+def test_differences():
     octaves = [
         [
             numpy.array([[1, 2, 3, 4],
@@ -110,7 +112,7 @@ def test_difference():
             numpy.array([[2, 22], [20, 202]], dtype=numpy.uint8),
         ]
     ]
-    output = difference(octaves)
+    output = differences(octaves)
 
     # Check size and type
     assert len(output) == 2
@@ -122,5 +124,72 @@ def test_difference():
     assert output[1][0].dtype == int
 
     # Check values
-    assert output[0][0] == -octaves[0][0].astype(int)
-    assert output[0][1] == octaves[1][1].astype(int) - octaves[1][0].astype(int)
+    assert numpy.allclose(output[0][0], -octaves[0][0].astype(int))
+    assert numpy.allclose(
+        output[1][0], octaves[1][1].astype(int) - octaves[1][0].astype(int)
+    )
+
+
+@pytest.fixture
+def empty():
+    return [
+        [
+            numpy.zeros((3, 3), dtype=int),
+            numpy.zeros((3, 3), dtype=int),
+            numpy.zeros((3, 3), dtype=int),
+        ]
+    ]
+
+
+class TestExtremities:
+
+    def test_no_extremes(self, empty):
+        assert list(extremities(empty)) == []
+
+    @pytest.mark.parametrize("value", [100, -100])
+    def test_basic(self, value, empty):
+        # Set the middle value of the middle array in the first octave to value
+        empty[0][1][1, 1] = value
+        assert isinstance(extremities(empty), types.GeneratorType)
+        assert list(extremities(empty)) == [[0, 1, 1, 1]]
+
+    def test_octaves(self):
+        diffed = [
+            [
+                numpy.zeros((6, 6), dtype=int),
+                numpy.zeros((6, 6), dtype=int),
+                numpy.zeros((6, 6), dtype=int),
+            ],
+            [
+                numpy.zeros((3, 3), dtype=int),
+                numpy.zeros((3, 3), dtype=int),
+                numpy.zeros((3, 3), dtype=int),
+            ],
+        ]
+        diffed[0][1][1, 1] = -10
+        diffed[0][1][2, 4] = 20
+        diffed[0][1][4, 3] = -20
+        diffed[1][1][1, 1] = 10
+        assert list(extremities(diffed)) == [
+            [0, 1, 1, 1],
+            [0, 1, 2, 4],
+            [0, 1, 4, 3],
+            [1, 1, 1, 1],
+        ]
+
+    def test_realistic(self):
+        diffed = [
+            [   # Fill with random numbers from 0-10
+                (numpy.random.random((6, 6)) * 10).astype(int),
+                (numpy.random.random((6, 6)) * 10).astype(int),
+                (numpy.random.random((6, 6)) * 10).astype(int),
+            ],
+        ]
+        # Set up a high value (1, 1) where it should be overshadowed by another
+        # at (2, 2).
+        diffed[0][1][1, 1] = 20
+        diffed[0][1][2, 2] = 30
+        # Then set up a minimum value, also with a competitor
+        diffed[0][1][3, 4] = -20
+        diffed[0][1][4, 4] = -15
+        assert list(extremities(diffed)) == [[0, 1, 2, 2], [0, 1, 3, 4]]

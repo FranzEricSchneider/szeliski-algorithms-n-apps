@@ -70,7 +70,8 @@ def detect_features(image):
     """
     downsampled = downsample(image, NUM_OCTAVES)
     blurred = blur(downsampled, KERNELS)
-    differences = difference(blurred)
+    diffed = differences(blurred)
+    extrema = extremities(diffed)
 
 
 def downsample(image, num_octaves):
@@ -116,7 +117,7 @@ def blur(images, kernels):
     return blurred
 
 
-def difference(blurred):
+def differences(blurred):
     """Get differences between each image in the octaves.
 
     Arguments:
@@ -126,7 +127,72 @@ def difference(blurred):
         octave. That's for the simple reason that getting deltas between
         elements in a list reduces the length by 1.
     """
-    pass
+    diffed = []
+    for images in blurred:
+        octave = []
+        for i in range(len(images) - 1):
+            octave.append(images[i + 1].astype(int) - images[i].astype(int))
+        diffed.append(octave)
+    return diffed
+
+
+def extremities(diffed):
+    """
+    Get extrema sandwiched between the outer layers. Something is marked as
+    extrema if it is higher OR lower than ALL its neighbors.
+
+    Note that extrema are determined by their 26 neighbors (9 on upper/lower
+    images, 8 around the pixel in its image). This takes 3 images to find, and
+    means that extrema cannot come from the outer images. This also means that
+    extrema cannot come from the other ring of pixels.
+
+    Arguments:
+        diffed: See the docstring of differences for the output. That's
+            basically a series of image-like arrays, arranged in groups by
+            downsample size. So the first group will be (n, n), the next
+            (n/2, n/2), etc.
+
+    Yields: Elements in a list like [[o, k, i, j], ...] where o is the index of
+        the current octave (e.g. 0 for the first group of images), k is the
+        index of the image within the group (note that this is limited between
+        1 and len(octave) - 2) (also not sure if this will be used later, but
+        hey bookkeeping), and (i, j) is the pixel location (x/y index) of the
+        extrema.
+    """
+
+    # TODO: Would it be faster to construct or modify a mask based on i, j?
+    def neighbors_minmax(o, k, i, j):
+        """Helper function to find the min/max values around a given pixel."""
+        neighbors = []
+        for image_index in [k-1, k+1]:
+            neighbors.extend(diffed[o][image_index][i-1:i+2, j-1:j+2].flatten())
+        # Avoid the central pixel
+        central = diffed[o][k][i-1:i+2, j-1:j+2].flatten()
+        neighbors.extend(central[:4])
+        neighbors.extend(central[5:])
+        return numpy.min(neighbors), numpy.max(neighbors)
+
+    # Go through the octaves and diffed images to find extrema. An important
+    # note is that
+    # 1) We go from [1:-1] in the diffed images, so that we always have a
+    #    diffed image on either side to compare to
+    # 2) We also go from [1:-1] on the pixel counts, so that there's always a
+    #    pixel buffer around our selected pixels, and we always have 26
+    #    neighbors
+    for octave_index, octave in enumerate(diffed):
+        # This takes advantage of the fact that zip stops when the shorter
+        # list (octave[1:-1]) ends, so I didn't bother making range() cover
+        # the same area.
+        for image_index, image in zip(range(1, len(octave)), octave[1:-1]):
+            # Go through each pixel
+            # TODO: Is this too slow? Do we have a faster alternative?
+            for i in range(1, image.shape[0] - 1):
+                for j in range(1, image.shape[1] - 1):
+                    # If we have an extreme point, yield
+                    vector = [octave_index, image_index, i, j]
+                    nmin, nmax = neighbors_minmax(*vector)
+                    if (image[i, j] < nmin) or (image[i, j] > nmax):
+                        yield vector
 
 
 if __name__ == "__main__":
