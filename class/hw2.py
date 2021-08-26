@@ -5,6 +5,7 @@ image for classification
 
 import argparse
 import cProfile
+from matplotlib import pyplot
 from pathlib import Path
 import time
 
@@ -37,7 +38,7 @@ NUM_OCTAVES = 4
 
 
 
-def main(image, profile):
+def main(image, profile, plot_keypoints):
 
     # Start profiling if the flag is set
     if profile:
@@ -48,6 +49,9 @@ def main(image, profile):
     # in the original SIFT paper, Difference of Gaussians (DoG). Apparently
     # this is a computationally efficient version of Laplacian of Gaussians.
     keypoints = detect_features(image)
+    if plot_keypoints:
+        display_keypoints(image, keypoints)
+
 
     # This process is fairly simple, and is described well in Szeliski
     # sifted = siftify(keypoints)
@@ -71,7 +75,9 @@ def detect_features(image):
     downsampled = downsample(image, NUM_OCTAVES)
     blurred = blur(downsampled, KERNELS)
     diffed = differences(blurred)
-    extrema = extremities(diffed)
+    extrema = list(extremities(diffed))
+    # TODO: Add a filtering step
+    return extrema
 
 
 def downsample(image, num_octaves):
@@ -176,9 +182,9 @@ def extremities(diffed):
     # note is that
     # 1) We go from [1:-1] in the diffed images, so that we always have a
     #    diffed image on either side to compare to
-    # 2) We also go from [1:-1] on the pixel counts, so that there's always a
-    #    pixel buffer around our selected pixels, and we always have 26
-    #    neighbors
+    # 2) We go from [8:-8] on the pixel counts, so that there's always a two
+    #    pixel buffer around our selected pixels. This is important for SIFT,
+    #    which requires a 16x16 grid
     for octave_index, octave in enumerate(diffed):
         # This takes advantage of the fact that zip stops when the shorter
         # list (octave[1:-1]) ends, so I didn't bother making range() cover
@@ -186,8 +192,8 @@ def extremities(diffed):
         for image_index, image in zip(range(1, len(octave)), octave[1:-1]):
             # Go through each pixel
             # TODO: Is this too slow? Do we have a faster alternative?
-            for i in range(1, image.shape[0] - 1):
-                for j in range(1, image.shape[1] - 1):
+            for i in range(8, image.shape[0] - 8):
+                for j in range(8, image.shape[1] - 8):
                     # If we have an extreme point, yield
                     vector = [octave_index, image_index, i, j]
                     nmin, nmax = neighbors_minmax(*vector)
@@ -195,15 +201,39 @@ def extremities(diffed):
                         yield vector
 
 
+def display_keypoints(image, keypoints):
+    color = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    for o, k, i, j in keypoints:
+        scalar = (2**o)
+        cv2.circle(img=color,
+                   center=(scalar * j, scalar * i),
+                   radius=2,
+                   color=(255, 0, 0),
+                   thickness=-1)
+        cv2.rectangle(img=color,
+                      pt1=(scalar * (j - 8), scalar * (i - 8)),
+                      pt2=(scalar * (j + 8), scalar * (i + 8)),
+                      color=(255, 0, 0),
+                      thickness=1)
+    pyplot.imshow(color)
+    pyplot.title("Keypoints of varying scales")
+    pyplot.show()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Get foreground from video.")
     parser.add_argument("image",
                         help="Path to image we want to bag of words.",
                         type=Path)
+    parser.add_argument("-k", "--plot-keypoints",
+                        help="Whether to display image keypoints.",
+                        action="store_true")
     parser.add_argument("-p", "--profile",
                         help="Capture profile information of the process.",
                         action="store_true")
     args = parser.parse_args()
-    import ipdb; ipdb.set_trace()
-    image = cv2.cvtColor(cv2.imread(args.image), cv2.COLOR_BGR2GRAY)
-    main(image, args.profile)
+
+    assert args.image.is_file()
+    image = cv2.cvtColor(cv2.imread(str(args.image)), cv2.COLOR_BGR2GRAY)
+
+    main(image, args.profile, args.plot_keypoints)
