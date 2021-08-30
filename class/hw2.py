@@ -11,6 +11,7 @@ import time
 
 import cv2
 import numpy
+from skimage.feature import hessian_matrix
 
 
 # Always...
@@ -36,6 +37,11 @@ KERNELS = [cv2.getGaussianKernel(KERNEL_SIDE_LEN, scale * BASE_STDDEV)
 
 NUM_OCTAVES = 4
 
+# This is "the standard deviation used for the Gaussian kernel, which is used
+# as weighting function for the auto-correlation matrix." It's absolutely
+# arbitrary at the moment, this is what was in the example. I found someone
+# online setting it to 3.0 as well.
+HESSIAN_SIGMA = 0.1
 
 
 def main(image, profile, plot_keypoints):
@@ -71,6 +77,7 @@ def detect_features(image):
     """
     Inspired by Szeliski section 7.1.1, as well as:
         https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf
+        https://en.wikipedia.org/wiki/Scale-invariant_feature_transform
     """
     downsampled = downsample(image, NUM_OCTAVES)
     blurred = blur(downsampled, KERNELS)
@@ -201,6 +208,78 @@ def extremities(diffed):
                         yield vector
 
 
+def derivative(downsampled):
+    """Apply the Scharr operator to each image, getting (dx, dy) for each pixel.
+
+    Inspired by this. Apparently Scharr is more accurate than Sobel for (3, 3)
+    kernels? That said, maybe I should be using something more than (3, 3)?
+        https://docs.opencv.org/3.4/d2/d2c/tutorial_sobel_derivatives.html
+
+    Arguments:
+        downsampled: See downsample() docstring output, it's a list of
+            progressively downsampled grayscale images
+
+    Returns: Same list of progressively downsamples images, but instead of
+        (n, m) images they are (n, m, 2), where the last two elements are the
+        x (axis 0) and y (axis 1) derivative values.
+    """
+    return [
+        numpy.dstack((
+            cv2.Scharr(src=image.astype(float), ddepth=-1, dx=1, dy=0),
+            cv2.Scharr(src=image.astype(float), ddepth=-1, dx=0, dy=1),
+        ))
+        for image in downsampled
+    ]
+
+
+def hessian(downsampled):
+    """Get the hessian (double derivative) for each pixel in each given image.
+
+    Working from this:
+    https://scikit-image.org/docs/dev/api/skimage.feature.html#skimage.feature.hessian_matrix
+
+    Arguments:
+        downsampled: Same as derivative() docstring
+
+    Returns: Same list of progressively downsamples images, but instead of
+        (n, m) images they are (n, m, 2, 2), where each pixel is mapped to a
+        [[dxx, dxy], [dxy, dyy]] matrix. Note that x is along axis 0, y is
+        along axis 1.
+    """
+    output = []
+    for image in downsampled:
+        rr, rc, cc = hessian_matrix(image,
+                                    sigma=HESSIAN_SIGMA,
+                                    order="rc",
+                                    mode="mirror")
+        # Turn dxx, dxy, dyy into a (2, 2) matrix at each pixel
+        output.append(
+            numpy.stack([numpy.dstack([rr, rc]),
+                         numpy.dstack([rc, cc])],
+                        axis=3)
+        )
+    return output
+
+
+def filter_low_contrast(downsampled, extrema):
+    """Discard low-contrast keypoints
+
+    Extremely helpful and clear for filtering:
+    https://en.wikipedia.org/wiki/Scale-invariant_feature_transform#Keypoint_localization
+
+    Hessian (double-derivative) is defined in my Terms notes. Here's some talk
+    about how it would be computed theoretically:
+    https://www.quora.com/What-are-the-ways-of-calculating-2-x-2-Hessian-matrix-for-2D-image-of-pixel-at-x-y-position
+
+    I think we may need to calculate the derivative (convolution) and then the
+    hessian (convolutions) on every pixel of every downsample
+
+    This was a very nice explanation of how to derivatize images with some code:
+    https://towardsdatascience.com/image-derivative-8a07a4118550
+    """
+    pass
+
+
 def display_keypoints(image, keypoints):
     color = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     for o, k, i, j in keypoints:
@@ -218,6 +297,7 @@ def display_keypoints(image, keypoints):
     pyplot.imshow(color)
     pyplot.title("Keypoints of varying scales")
     pyplot.show()
+
 
 
 if __name__ == "__main__":

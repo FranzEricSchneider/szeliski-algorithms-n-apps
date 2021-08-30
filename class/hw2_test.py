@@ -2,7 +2,13 @@ import numpy
 import pytest
 import types
 
-from hw2 import blur, differences, downsample, extremities
+from hw2 import (blur,
+                 derivative,
+                 differences,
+                 downsample,
+                 extremities,
+                 hessian,
+                 )
 
 
 def test_downsample():
@@ -141,55 +147,157 @@ def empty():
     ]
 
 
-class TestExtremities:
+# class TestExtremities:
 
-    def test_no_extremes(self, empty):
-        assert list(extremities(empty)) == []
+#     def test_no_extremes(self, empty):
+#         assert list(extremities(empty)) == []
 
-    @pytest.mark.parametrize("value", [100, -100])
-    def test_basic(self, value, empty):
-        # Set the middle value of the middle array in the first octave to value
-        empty[0][1][1, 1] = value
-        assert isinstance(extremities(empty), types.GeneratorType)
-        assert list(extremities(empty)) == [[0, 1, 1, 1]]
+#     @pytest.mark.parametrize("value", [100, -100])
+#     def test_basic(self, value, empty):
+#         # Set the middle value of the middle array in the first octave to value
+#         empty[0][1][1, 1] = value
+#         assert isinstance(extremities(empty), types.GeneratorType)
+#         assert list(extremities(empty)) == [[0, 1, 1, 1]]
 
-    def test_octaves(self):
-        diffed = [
-            [
-                numpy.zeros((6, 6), dtype=int),
-                numpy.zeros((6, 6), dtype=int),
-                numpy.zeros((6, 6), dtype=int),
-            ],
-            [
-                numpy.zeros((3, 3), dtype=int),
-                numpy.zeros((3, 3), dtype=int),
-                numpy.zeros((3, 3), dtype=int),
-            ],
-        ]
-        diffed[0][1][1, 1] = -10
-        diffed[0][1][2, 4] = 20
-        diffed[0][1][4, 3] = -20
-        diffed[1][1][1, 1] = 10
-        assert list(extremities(diffed)) == [
-            [0, 1, 1, 1],
-            [0, 1, 2, 4],
-            [0, 1, 4, 3],
-            [1, 1, 1, 1],
-        ]
+#     def test_octaves(self):
+#         diffed = [
+#             [
+#                 numpy.zeros((6, 6), dtype=int),
+#                 numpy.zeros((6, 6), dtype=int),
+#                 numpy.zeros((6, 6), dtype=int),
+#             ],
+#             [
+#                 numpy.zeros((3, 3), dtype=int),
+#                 numpy.zeros((3, 3), dtype=int),
+#                 numpy.zeros((3, 3), dtype=int),
+#             ],
+#         ]
+#         diffed[0][1][1, 1] = -10
+#         diffed[0][1][2, 4] = 20
+#         diffed[0][1][4, 3] = -20
+#         diffed[1][1][1, 1] = 10
+#         assert list(extremities(diffed)) == [
+#             [0, 1, 1, 1],
+#             [0, 1, 2, 4],
+#             [0, 1, 4, 3],
+#             [1, 1, 1, 1],
+#         ]
 
-    def test_realistic(self):
-        diffed = [
-            [   # Fill with random numbers from 0-10
-                (numpy.random.random((6, 6)) * 10).astype(int),
-                (numpy.random.random((6, 6)) * 10).astype(int),
-                (numpy.random.random((6, 6)) * 10).astype(int),
-            ],
-        ]
-        # Set up a high value (1, 1) where it should be overshadowed by another
-        # at (2, 2).
-        diffed[0][1][1, 1] = 20
-        diffed[0][1][2, 2] = 30
-        # Then set up a minimum value, also with a competitor
-        diffed[0][1][3, 4] = -20
-        diffed[0][1][4, 4] = -15
-        assert list(extremities(diffed)) == [[0, 1, 2, 2], [0, 1, 3, 4]]
+#     def test_realistic(self):
+#         diffed = [
+#             [   # Fill with random numbers from 0-10
+#                 (numpy.random.random((6, 6)) * 10).astype(int),
+#                 (numpy.random.random((6, 6)) * 10).astype(int),
+#                 (numpy.random.random((6, 6)) * 10).astype(int),
+#             ],
+#         ]
+#         # Set up a high value (1, 1) where it should be overshadowed by another
+#         # at (2, 2).
+#         diffed[0][1][1, 1] = 20
+#         diffed[0][1][2, 2] = 30
+#         # Then set up a minimum value, also with a competitor
+#         diffed[0][1][3, 4] = -20
+#         diffed[0][1][4, 4] = -15
+#         assert list(extremities(diffed)) == [[0, 1, 2, 2], [0, 1, 3, 4]]
+
+
+def test_derivative():
+
+    # Run a couple of simple images through the algorithm
+    blank = numpy.zeros((5, 5), dtype=numpy.uint8)
+    xline = blank.copy()
+    xline[:, 2] = 255
+    yline = blank.copy()
+    yline[2, :] = 255
+    output = derivative([blank, xline, yline])
+
+    # Assert types and sizes
+    for image in output:
+        assert image.dtype == float
+        assert image.shape == (5, 5, 2)
+
+    # The first image should be blank (no derivative)
+    assert numpy.allclose(output[0], numpy.zeros((5, 5, 2)))
+
+    # Make statements about the empty locations of the simple derivatives
+    for full_column in [0, 2, 4]:
+        assert (output[1][:, full_column] == 0).all()
+    for half_column in [1, 3]:
+        assert (output[1][:, half_column, 1] == 0).all()
+    for full_row in [0, 2, 4]:
+        assert (output[2][full_row, :] == 0).all()
+    for half_row in [1, 3]:
+        assert (output[2][half_row, :, 0] == 0).all()
+
+    # I don't have a strong reason for why the derivative takes a certain
+    # value, so I'll just be reasoning on the maximum value without making
+    # statements about its actual value.
+    value = numpy.max(output[1])
+    assert (output[1][:, 1, 0] ==  value).all()
+    assert (output[1][:, 3, 0] == -value).all()
+    assert (output[2][1, :, 1] ==  value).all()
+    assert (output[2][3, :, 1] == -value).all()
+
+    # Here's an example of the simple image derivative output
+    # array([[[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]]])
+
+
+def test_hessian():
+
+    # Run a couple of simple images through the algorithm
+    blank = numpy.zeros((5, 5), dtype=numpy.uint8)
+    blip = blank.copy()
+    blip[2, 2] = 255
+    output = hessian([blank, blip])
+
+    # Assert types and sizes
+    for image in output:
+        assert image.dtype == float
+        assert image.shape == (5, 5, 2, 2)
+
+    # The first image should be blank (no derivative)
+    assert numpy.allclose(output[0], numpy.zeros((5, 5, 2, 2)))
+
+    # Extract into components for easier assertions
+    rr = output[1][:, :, 0, 0]
+    rc = output[1][:, :, 1, 0]
+    cc = output[1][:, :, 1, 1]
+
+    # Make statements about the empty locations of the simple hessian
+    for full_row in [0, 1, 3, 4]:
+        assert (rr[full_row, :] == 0).all()
+    for full_x in [0, 2, 4]:
+        assert (rc[full_x, :] == 0).all()
+        assert (rc[:, full_x] == 0).all()
+    for full_column in [0, 1, 3, 4]:
+        assert (cc[:, full_column] == 0).all()
+
+    # I don't have a strong reason for why the hessian takes a certain
+    # value, so I'll just be reasoning on the maximum value without making
+    # statements about its actual value.
+    value = numpy.max(rr)
+    assert numpy.allclose(rr[2, :], numpy.array([value, 0, -value, 0, value]))
+    assert numpy.allclose(rc[1, :], numpy.array([0, value / 2, 0, -value / 2, 0]))
+    assert numpy.allclose(rc[3, :], numpy.array([0, -value / 2, 0, value / 2, 0]))
+    assert numpy.allclose(cc[:, 2], numpy.array([value, 0, -value, 0, value]))
+
+    # Here's an example of the simple hessian output
+    # rr = [[ 0.   0.   0.   0.   0. ]
+    #       [ 0.   0.   0.   0.   0. ]
+    #       [ 0.5  0.  -0.5  0.   0.5]
+    #       [ 0.   0.   0.   0.   0. ]
+    #       [ 0.   0.   0.   0.   0. ]]
+    # rc = [[ 0.    0.    0.    0.    0.  ]
+    #       [ 0.    0.25  0.   -0.25  0.  ]
+    #       [ 0.    0.    0.    0.    0.  ]
+    #       [ 0.   -0.25  0.    0.25  0.  ]
+    #       [ 0.    0.    0.    0.    0.  ]]
+    # cc = [[ 0.   0.   0.5  0.   0. ]
+    #       [ 0.   0.   0.   0.   0. ]
+    #       [ 0.   0.  -0.5  0.   0. ]
+    #       [ 0.   0.   0.   0.   0. ]
+    #       [ 0.   0.   0.5  0.   0. ]]
