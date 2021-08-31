@@ -37,6 +37,12 @@ KERNELS = [cv2.getGaussianKernel(KERNEL_SIDE_LEN, scale * BASE_STDDEV)
 
 NUM_OCTAVES = 4
 
+# Global cache of image derivatives, stored by an int tuple of (octave index,
+# image index within the octave).
+DERIVATIVES = {}
+# Same story but with hessians (double derivatives)
+HESSIANS = {}
+
 # This is "the standard deviation used for the Gaussian kernel, which is used
 # as weighting function for the auto-correlation matrix." It's absolutely
 # arbitrary at the moment, this is what was in the example. I found someone
@@ -79,10 +85,17 @@ def detect_features(image):
         https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf
         https://en.wikipedia.org/wiki/Scale-invariant_feature_transform
     """
+
+    # Scale the image down to 0-1 for two reasons:
+    # 1) It matches the paper
+    # 2) It prevents any uint8 step aliasing along the way
+    image = image.astype(float) / numpy.max(image)
+
     downsampled = downsample(image, NUM_OCTAVES)
     blurred = blur(downsampled, KERNELS)
     diffed = differences(blurred)
     extrema = list(extremities(diffed))
+    filtered = adjust_and_filter(extrema, diffed)
     # TODO: Add a filtering step
     return extrema
 
@@ -91,7 +104,7 @@ def downsample(image, num_octaves):
     """Downsample an image recursively until we have the right number.
 
     Arguments:
-        image: Regular grayscale image, np.uint8 (n, m) matrix
+        image: Grayscale image, (n, m) matrix of undetermined dtype
         num_octaves: (int) How many octaves we want to end up with. Octave 0
             will just be the image again, then 1..N-1 will each be downsampled
             by a factor of 2.
@@ -109,7 +122,7 @@ def blur(images, kernels):
     """Blur all incoming images by a set of kernels.
 
     Arguments:
-        images: A list of grayscale images
+        images: A list of grayscale images of undetermined dtype
         kernels: A list of kernels, e.g. from cv2.getGaussianKernel. These
             should be (n, 1) gaussian arrays, type float.
 
@@ -134,7 +147,7 @@ def differences(blurred):
     """Get differences between each image in the octaves.
 
     Arguments:
-        blurred: See blur() docstring for output details
+        blurred: See blur() docstring for output details. Dtype must be float
 
     Returns: almost the same as before, but with length 1 less within each
         octave. That's for the simple reason that getting deltas between
@@ -142,9 +155,13 @@ def differences(blurred):
     """
     diffed = []
     for images in blurred:
+        # Check the dtype
+        for image in images:
+            assert image.dtype == float
+        # Then collect the diffed images
         octave = []
         for i in range(len(images) - 1):
-            octave.append(images[i + 1].astype(int) - images[i].astype(int))
+            octave.append(images[i + 1] - images[i])
         diffed.append(octave)
     return diffed
 
@@ -206,6 +223,44 @@ def extremities(diffed):
                     nmin, nmax = neighbors_minmax(*vector)
                     if (image[i, j] < nmin) or (image[i, j] > nmax):
                         yield vector
+
+
+def adjust_and_filter(extrema, diffed):
+
+    for o, k, i, j in extrema:
+
+        dx = get_cache(diffed, o, k, (i, j), DERIVATIVES, derivative)
+        ddx = get_cache(diffed, o, k, (i, j), HESSIANS, hessian)
+
+        try:
+            inv_ddx = numpy.linalg.inv(ddx)
+        except numpy.linalg.LinAlgError:
+            # In the case if a singular matrix, let's toss out the extremity.
+            # I'm not 100% sure, but I think that cases where the matrix would
+            # be singular lines up with times where we don't care (e.g. if the
+            # rows are not independent that means the axes of the transform
+            # overlap and... maybe we're on a line?). I suspect it won't happen
+            # much in real life.
+            continue
+
+        # I've got a couple of problems here
+        # 1) x_adjusted = -inv_ddx.dot(dx) appears to give a huge value for
+        #    x_adjusted, in the range of 10-30 pixels. This seems very wrong.
+        #    Maybe one of the derivative methods is scaled inappropriately?
+        # 2) Just playing with D + dx.dot(x) + x.dot((ddx.dot(x))) for small
+        #    x values like numpy.array([1, 1]) appears not to be a very good
+        #    approximation. Maybe one of the derivative methods is scaled
+        #    inappropriately? This may be a good time for some simple test
+        #    images.
+        import ipdb; ipdb.set_trace()
+
+
+def get_cache(diffed, octave_index, image_index, pixel, cache, function):
+    """Helper function to help cache and retrieve derivative calculations."""
+    key = (octave_index, image_index)
+    if key not in cache:
+        cache[key] = function(diffed[octave_index][image_index])
+    return cache[key][pixel]
 
 
 def derivative(image):

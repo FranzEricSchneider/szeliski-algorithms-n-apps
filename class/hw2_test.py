@@ -104,18 +104,18 @@ def test_blur():
 def test_differences():
     octaves = [
         [
-            numpy.array([[1, 2, 3, 4],
-                         [2, 3, 4, 1],
-                         [3, 4, 1, 2],
-                         [4, 1, 2, 3]], dtype=numpy.uint8),
+            numpy.array([[1, 2, 3, 4.1],
+                         [2, 3, 4.1, 1],
+                         [3, 4.1, 1, 2],
+                         [4.1, 1, 2, 3]], dtype=float),
             numpy.array([[0, 0, 0, 0],
                          [0, 0, 0, 0],
                          [0, 0, 0, 0],
-                         [0, 0, 0, 0]], dtype=numpy.uint8),
+                         [0, 0, 0, 0]], dtype=float),
         ],
         [
-            numpy.array([[101, 10], [11, 1]], dtype=numpy.uint8),
-            numpy.array([[2, 22], [20, 202]], dtype=numpy.uint8),
+            numpy.array([[101, 10.5], [11, 1]], dtype=float),
+            numpy.array([[2, 22], [20.5, 202]], dtype=float),
         ]
     ]
     output = differences(octaves)
@@ -125,14 +125,14 @@ def test_differences():
     for octave in output:
         assert len(octave) == 1
     assert output[0][0].shape == (4, 4)
-    assert output[0][0].dtype == int
+    assert output[0][0].dtype == float
     assert output[1][0].shape == (2, 2)
-    assert output[1][0].dtype == int
+    assert output[1][0].dtype == float
 
     # Check values
-    assert numpy.allclose(output[0][0], -octaves[0][0].astype(int))
+    assert numpy.allclose(output[0][0], -octaves[0][0])
     assert numpy.allclose(
-        output[1][0], octaves[1][1].astype(int) - octaves[1][0].astype(int)
+        output[1][0], octaves[1][1] - octaves[1][0]
     )
 
 
