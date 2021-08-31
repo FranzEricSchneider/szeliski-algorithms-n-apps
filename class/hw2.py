@@ -189,7 +189,7 @@ def extremities(diffed):
     # note is that
     # 1) We go from [1:-1] in the diffed images, so that we always have a
     #    diffed image on either side to compare to
-    # 2) We go from [8:-8] on the pixel counts, so that there's always a two
+    # 2) We go from [8:-8] on the pixel counts, so that there's always an 8
     #    pixel buffer around our selected pixels. This is important for SIFT,
     #    which requires a 16x16 grid
     for octave_index, octave in enumerate(diffed):
@@ -208,57 +208,48 @@ def extremities(diffed):
                         yield vector
 
 
-def derivative(downsampled):
-    """Apply the Scharr operator to each image, getting (dx, dy) for each pixel.
+def derivative(image):
+    """Apply the Scharr operator to the image, getting (dx, dy) for each pixel.
 
     Inspired by this. Apparently Scharr is more accurate than Sobel for (3, 3)
     kernels? That said, maybe I should be using something more than (3, 3)?
         https://docs.opencv.org/3.4/d2/d2c/tutorial_sobel_derivatives.html
 
     Arguments:
-        downsampled: See downsample() docstring output, it's a list of
-            progressively downsampled grayscale images
+        image: Greyscale image, theoretically should be one of the DoG images
 
-    Returns: Same list of progressively downsamples images, but instead of
-        (n, m) images they are (n, m, 2), where the last two elements are the
-        x (axis 0) and y (axis 1) derivative values.
+    Returns: Approximately same size image out, but instead of an (n, m) image
+        it is (n, m, 2), where the last two elements are the x (axis 0) and
+        y (axis 1) derivative values.
     """
-    return [
-        numpy.dstack((
-            cv2.Scharr(src=image.astype(float), ddepth=-1, dx=1, dy=0),
-            cv2.Scharr(src=image.astype(float), ddepth=-1, dx=0, dy=1),
-        ))
-        for image in downsampled
-    ]
+    return numpy.dstack((
+        cv2.Scharr(src=image.astype(float), ddepth=-1, dx=1, dy=0),
+        cv2.Scharr(src=image.astype(float), ddepth=-1, dx=0, dy=1),
+    ))
 
 
-def hessian(downsampled):
-    """Get the hessian (double derivative) for each pixel in each given image.
+def hessian(image):
+    """Get the hessian (double derivative) for each pixel in the given image.
 
     Working from this:
     https://scikit-image.org/docs/dev/api/skimage.feature.html#skimage.feature.hessian_matrix
 
     Arguments:
-        downsampled: Same as derivative() docstring
+        image: Greyscale image, theoretically should be one of the DoG images
 
-    Returns: Same list of progressively downsamples images, but instead of
-        (n, m) images they are (n, m, 2, 2), where each pixel is mapped to a
+    Returns: Approximately same size image out, but instead of an (n, m) image
+        it is (n, m, 2, 2), where each pixel is mapped to a
         [[dxx, dxy], [dxy, dyy]] matrix. Note that x is along axis 0, y is
         along axis 1.
     """
-    output = []
-    for image in downsampled:
-        rr, rc, cc = hessian_matrix(image,
-                                    sigma=HESSIAN_SIGMA,
-                                    order="rc",
-                                    mode="mirror")
-        # Turn dxx, dxy, dyy into a (2, 2) matrix at each pixel
-        output.append(
-            numpy.stack([numpy.dstack([rr, rc]),
-                         numpy.dstack([rc, cc])],
-                        axis=3)
-        )
-    return output
+    rr, rc, cc = hessian_matrix(image,
+                                sigma=HESSIAN_SIGMA,
+                                order="rc",
+                                mode="mirror")
+    # Turn dxx, dxy, dyy into a (2, 2) matrix at each pixel
+    return numpy.stack([numpy.dstack([rr, rc]),
+                        numpy.dstack([rc, cc])],
+                       axis=3)
 
 
 def filter_low_contrast(downsampled, extrema):
@@ -297,7 +288,6 @@ def display_keypoints(image, keypoints):
     pyplot.imshow(color)
     pyplot.title("Keypoints of varying scales")
     pyplot.show()
-
 
 
 if __name__ == "__main__":

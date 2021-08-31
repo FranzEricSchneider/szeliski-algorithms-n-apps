@@ -214,7 +214,7 @@ def test_derivative():
     xline[:, 2] = 255
     yline = blank.copy()
     yline[2, :] = 255
-    output = derivative([blank, xline, yline])
+    output = [derivative(image) for image in [blank, xline, yline]]
 
     # Assert types and sizes
     for image in output:
@@ -257,7 +257,7 @@ def test_hessian():
     blank = numpy.zeros((5, 5), dtype=numpy.uint8)
     blip = blank.copy()
     blip[2, 2] = 255
-    output = hessian([blank, blip])
+    output = [hessian(image) for image in [blank, blip]]
 
     # Assert types and sizes
     for image in output:
