@@ -206,49 +206,72 @@ class TestExtremities:
         assert list(extremities(diffed)) == [[0, 1, 8, 9], [0, 1, 9, 8]]
 
 
-def test_derivative():
+class TestDerivative:
 
-    # Run a couple of simple images through the algorithm
-    blank = numpy.zeros((5, 5), dtype=numpy.uint8)
-    xline = blank.copy()
-    xline[:, 2] = 255
-    yline = blank.copy()
-    yline[2, :] = 255
-    output = [derivative(image) for image in [blank, xline, yline]]
+    def test_derivative(self):
+        # Run a couple of simple images through the algorithm
+        blank = numpy.zeros((5, 5), dtype=numpy.uint8)
+        xline = blank.copy()
+        xline[:, 2] = 255
+        yline = blank.copy()
+        yline[2, :] = 255
+        output = [derivative(image) for image in [blank, xline, yline]]
 
-    # Assert types and sizes
-    for image in output:
-        assert image.dtype == float
-        assert image.shape == (5, 5, 2)
+        # Assert types and sizes
+        for image in output:
+            assert image.dtype == float
+            assert image.shape == (5, 5, 2)
 
-    # The first image should be blank (no derivative)
-    assert numpy.allclose(output[0], numpy.zeros((5, 5, 2)))
+        # The first image should be blank (no derivative)
+        assert numpy.allclose(output[0], numpy.zeros((5, 5, 2)))
 
-    # Make statements about the empty locations of the simple derivatives
-    for full_column in [0, 2, 4]:
-        assert (output[1][:, full_column] == 0).all()
-    for half_column in [1, 3]:
-        assert (output[1][:, half_column, 1] == 0).all()
-    for full_row in [0, 2, 4]:
-        assert (output[2][full_row, :] == 0).all()
-    for half_row in [1, 3]:
-        assert (output[2][half_row, :, 0] == 0).all()
+        # Make statements about the empty locations of the simple derivatives
+        for full_column in [0, 2, 4]:
+            assert (output[1][:, full_column] == 0).all()
+        for half_column in [1, 3]:
+            assert (output[1][:, half_column, 1] == 0).all()
+        for full_row in [0, 2, 4]:
+            assert (output[2][full_row, :] == 0).all()
+        for half_row in [1, 3]:
+            assert (output[2][half_row, :, 0] == 0).all()
 
-    # I don't have a strong reason for why the derivative takes a certain
-    # value, so I'll just be reasoning on the maximum value without making
-    # statements about its actual value.
-    value = numpy.max(output[1])
-    assert (output[1][:, 1, 0] ==  value).all()
-    assert (output[1][:, 3, 0] == -value).all()
-    assert (output[2][1, :, 1] ==  value).all()
-    assert (output[2][3, :, 1] == -value).all()
+        # I don't have a strong reason for why the derivative takes a certain
+        # value, so I'll just be reasoning on the maximum value without making
+        # statements about its actual value.
+        value = numpy.max(output[1])
+        assert (output[1][:, 1, 0] ==  value).all()
+        assert (output[1][:, 3, 0] == -value).all()
+        assert (output[2][1, :, 1] ==  value).all()
+        assert (output[2][3, :, 1] == -value).all()
 
-    # Here's an example of the simple image derivative output
-    # array([[[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-    #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]]])
+        # Here's an example of the simple image derivative output
+        # array([[[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
+        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]]])
+
+    def test_scaling(self):
+        """Make sure the derivative returns reasonable scaling."""
+
+        # Make a simple image that should have slope 1
+        image = numpy.array([[1, 2, 3, 4, 5],
+                             [1, 2, 3, 4, 5],
+                             [1, 2, 3, 4, 5],
+                             [1, 2, 3, 4, 5]])
+        output = derivative(image)
+        print(output)
+
+        # Check that the x slope is 1 in the center (apparently there's a
+        # buffer behavior that makes it 0 at the axis 0 edges, whatever)
+        assert numpy.allclose(output[:, 1:4, 0], 1.0)
+
+        # Check that it's 0 for all y values
+        assert numpy.allclose(output[:, :, 1], 0.0)
+
+        # It should be zero for all edge x values
+        assert numpy.allclose(output[:, 0, 0], 0.0)
+        assert numpy.allclose(output[:, 4, 0], 0.0)
 
 
 def test_hessian():

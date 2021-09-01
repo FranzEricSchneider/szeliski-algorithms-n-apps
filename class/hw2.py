@@ -19,7 +19,8 @@ numpy.set_printoptions(suppress=True, precision=6)
 
 
 # TODO: Explain. Test?
-DIVISIONS_PER_OCTAVE = 5
+# DIVISIONS_PER_OCTAVE = 5  # TODO: Why is this causing a crash??? Suspicious
+DIVISIONS_PER_OCTAVE = 4
 SCALES = [2**(i/DIVISIONS_PER_OCTAVE) for i in range(DIVISIONS_PER_OCTAVE)]
 
 # WTF size should the gaussian kernel be? This is never stated. Should it be
@@ -35,7 +36,8 @@ BASE_STDDEV = 1.2
 KERNELS = [cv2.getGaussianKernel(KERNEL_SIDE_LEN, scale * BASE_STDDEV)
            for scale in SCALES]
 
-NUM_OCTAVES = 4
+# NUM_OCTAVES = 4
+NUM_OCTAVES = 2
 
 # Global cache of image derivatives, stored by an int tuple of (octave index,
 # image index within the octave).
@@ -49,8 +51,14 @@ HESSIANS = {}
 # online setting it to 3.0 as well.
 HESSIAN_SIGMA = 0.1
 
+# Taken straight from the paper, could be tested
+# CONTRAST_THRESHOLD = 0.03
+CONTRAST_THRESHOLD = 0.003
+PRINCIPAL_RATIO = 10
+PRINCIPAL_THESHOLD = (PRINCIPAL_RATIO + 1)**2 / PRINCIPAL_RATIO
 
-def main(image, profile, plot_keypoints):
+
+def main(image, profile, plot_update, plot_filtered, plot_keypoints):
 
     # Start profiling if the flag is set
     if profile:
@@ -60,10 +68,9 @@ def main(image, profile, plot_keypoints):
     # There are many possible keypoint detectors. Let's use the one described
     # in the original SIFT paper, Difference of Gaussians (DoG). Apparently
     # this is a computationally efficient version of Laplacian of Gaussians.
-    keypoints = detect_features(image)
+    keypoints = detect_features(image, plot_update, plot_filtered)
     if plot_keypoints:
         display_keypoints(image, keypoints)
-
 
     # This process is fairly simple, and is described well in Szeliski
     # sifted = siftify(keypoints)
@@ -79,7 +86,7 @@ def main(image, profile, plot_keypoints):
         print(f"Wrote profile stats to {filename}")
 
 
-def detect_features(image):
+def detect_features(original, plot_update, plot_filtered):
     """
     Inspired by Szeliski section 7.1.1, as well as:
         https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf
@@ -89,15 +96,26 @@ def detect_features(image):
     # Scale the image down to 0-1 for two reasons:
     # 1) It matches the paper
     # 2) It prevents any uint8 step aliasing along the way
-    image = image.astype(float) / numpy.max(image)
+    image = original.astype(float) / numpy.max(original)
 
     downsampled = downsample(image, NUM_OCTAVES)
     blurred = blur(downsampled, KERNELS)
     diffed = differences(blurred)
     extrema = list(extremities(diffed))
-    filtered = adjust_and_filter(extrema, diffed)
-    # TODO: Add a filtering step
-    return extrema
+    valid, low_contrast, edge = adjust_and_filter(extrema, diffed, plot_update)
+    if plot_filtered:
+        print(f"valid: {len(valid)}")
+        print(f"low_contrast: {len(low_contrast)}")
+        print(f"edge: {len(edge)}")
+        figure, axes = pyplot.subplots(1, 3)
+        display_keypoints(original, valid, axis=axes[0], color=(0, 255, 0),
+                          show=False, title="Valid Keypoints")
+        display_keypoints(original, low_contrast, axis=axes[1], color=(255, 0, 0),
+                          show=False, title="Low-Contrast Filtered Keypoints")
+        display_keypoints(original, edge, axis=axes[2], color=(0, 0, 255),
+                          show=False, title="Edge Filtered Keypoints")
+        pyplot.show()
+    return valid
 
 
 def downsample(image, num_octaves):
@@ -225,34 +243,117 @@ def extremities(diffed):
                         yield vector
 
 
-def adjust_and_filter(extrema, diffed):
+def adjust_and_filter(extrema, diffed, plot_update):
+
+    valid = []
+    low_contrast = []
+    edge = []
 
     for o, k, i, j in extrema:
 
-        dx = get_cache(diffed, o, k, (i, j), DERIVATIVES, derivative)
-        ddx = get_cache(diffed, o, k, (i, j), HESSIANS, hessian)
-
+        # TODO: Refactor this shit, too many inputs and outputs
         try:
-            inv_ddx = numpy.linalg.inv(ddx)
+            d, dx, ddx, x_adjusted, i_adjusted, j_adjusted = \
+                localize(diffed, o, k, i, j, plot_update)
         except numpy.linalg.LinAlgError:
-            # In the case if a singular matrix, let's toss out the extremity.
+            # In the case of a singular matrix, let's toss out the extremity.
             # I'm not 100% sure, but I think that cases where the matrix would
             # be singular lines up with times where we don't care (e.g. if the
             # rows are not independent that means the axes of the transform
             # overlap and... maybe we're on a line?). I suspect it won't happen
             # much in real life.
             continue
+        new_extrema = [o, k, i_adjusted, j_adjusted]
 
-        # I've got a couple of problems here
-        # 1) x_adjusted = -inv_ddx.dot(dx) appears to give a huge value for
-        #    x_adjusted, in the range of 10-30 pixels. This seems very wrong.
-        #    Maybe one of the derivative methods is scaled inappropriately?
-        # 2) Just playing with D + dx.dot(x) + x.dot((ddx.dot(x))) for small
-        #    x values like numpy.array([1, 1]) appears not to be a very good
-        #    approximation. Maybe one of the derivative methods is scaled
-        #    inappropriately? This may be a good time for some simple test
-        #    images.
-        import ipdb; ipdb.set_trace()
+        # Calculate an interpolated value and filter out if the abs value is
+        # too low (formula straight from the paper). This SHOULD weed out low
+        # contrast points
+        d_adjusted = d + 0.5*dx.dot(x_adjusted)
+        if abs(d_adjusted) < CONTRAST_THRESHOLD:
+            low_contrast.append(new_extrema)
+            continue
+
+        # Calculate the ratio of the principal axes of the hessian. The
+        # threshold SHOULD weed out edge-only points
+        if numpy.trace(ddx)**2 / numpy.linalg.det(ddx) < PRINCIPAL_THESHOLD:
+            edge.append(new_extrema)
+            continue
+
+        # Hey, we're here! Past the filter steps! Hypothetically this is a good
+        # keypoint
+        valid.append(new_extrema)
+
+    return valid, low_contrast, edge
+
+
+def localize(diffed, o, k, i, j, plot_update):
+
+    def get_gradients(o, k, i, j):
+        """Helper function to recalculate gradients."""
+        dx = get_cache(diffed, o, k, (i, j), DERIVATIVES, derivative)
+        ddx = get_cache(diffed, o, k, (i, j), HESSIANS, hessian)
+        inv_ddx = numpy.linalg.inv(ddx)
+        # This is straight from the paper. We can calculate the updated
+        # position where the derivative against x is 0
+        x_adjusted = -inv_ddx.dot(dx)
+        return dx, ddx, x_adjusted
+
+    # Get cached gradient info, then localize the point until we've hit the
+    # best spot
+    dx, ddx, x_adjusted = get_gradients(o, k, i, j)
+    i_adjusted_int = i
+    j_adjusted_int = j
+    # TODO: Investigate the difference between if/while, and which is a better
+    # idea. I think it got stuck in an infinite loop with while where some
+    # values kept tracking around?
+    # # For now, make a count of repeated updates. I'm curious
+    # counter = 0
+    # while (abs(x_adjusted) > 0.5).any():
+    if (abs(x_adjusted) > 0.5).any():
+        # counter += 1
+        i_adjusted_int = int(numpy.round(i + x_adjusted[0]))
+        j_adjusted_int = int(numpy.round(j + x_adjusted[1]))
+        dx, ddx, x_adjusted = get_gradients(o, k, i_adjusted_int, j_adjusted_int)
+    # if counter > 1:
+    #     print(f"Hit counter {counter} on original {o, k, i, j}, final"
+    #           f" {o, k, i_adjusted_int, j_adjusted_int}")
+    # # I think this is the case, examine any case where it's false and rework
+    # assert (abs(x_adjusted) < 0.5).all()
+
+    if plot_update:
+        diff_image = diff_to_uint8(diffed[o][k])
+        image = cv2.cvtColor(diff_image, cv2.COLOR_GRAY2RGB)
+        image[i_adjusted_int, j_adjusted_int] = (0, 255, 0)
+        image[i, j] = (255, 0, 0)
+
+        radius = 5
+        low_i = max(i_adjusted_int - radius, 0)
+        low_j = max(j_adjusted_int - radius, 0)
+
+        figure, axes = pyplot.subplots(1, 2)
+        for axis, plot_image in zip(axes, (diff_image, image)):
+            axis.imshow(plot_image[low_i:low_i + 2*radius + 1,
+                                   low_j:low_j + 2*radius + 1])
+        pyplot.title(f"Localization ({i}, {j}) -> ({i_adjusted}, {j_adjusted})")
+        pyplot.show()
+
+    return (diffed[o][k][i_adjusted_int, j_adjusted_int],
+            dx,
+            ddx,
+            x_adjusted,
+            i_adjusted_int,
+            j_adjusted_int)
+
+
+def diff_to_uint8(diff_image, washout=20):
+    """Turn a 1-channel diff image (float, possible negatives) to 0-255.
+
+    NOTE: for visual purposes, we will try to make a certain percentage of the
+    image pure black and white. The original images are very blah and grey.
+    """
+    uint8 = diff_image - numpy.percentile(diff_image, washout)
+    uint8 *= 255 / numpy.percentile(uint8, 100 - washout)
+    return numpy.clip(uint8, 0, 255).astype(numpy.uint8)
 
 
 def get_cache(diffed, octave_index, image_index, pixel, cache, function):
@@ -277,9 +378,15 @@ def derivative(image):
         it is (n, m, 2), where the last two elements are the x (axis 0) and
         y (axis 1) derivative values.
     """
+    src = image.astype(float)
+    # The Scharr kernal apparently needs 1/32 in order to be normalized. I
+    # tested this by making a simple image that should have slope 1 (pixel
+    # values [1, 2, 3, 4, 5]) and checking that. The Scharr kernel apparently
+    # looks something like [[-3, -10, -3], [0, 0, 0], [3, 10, 3]] (abs sum 32)
+    scale_factor = 1 / 32
     return numpy.dstack((
-        cv2.Scharr(src=image.astype(float), ddepth=-1, dx=1, dy=0),
-        cv2.Scharr(src=image.astype(float), ddepth=-1, dx=0, dy=1),
+        cv2.Scharr(src=src, ddepth=-1, dx=1, dy=0, scale=scale_factor),
+        cv2.Scharr(src=src, ddepth=-1, dx=0, dy=1, scale=scale_factor),
     ))
 
 
@@ -326,23 +433,30 @@ def filter_low_contrast(downsampled, extrema):
     pass
 
 
-def display_keypoints(image, keypoints):
-    color = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+def display_keypoints(image, keypoints, axis=None, color=(255, 0, 0), show=True,
+                      title="Keypoints of varying scales"):
+    plot_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     for o, k, i, j in keypoints:
         scalar = (2**o)
-        cv2.circle(img=color,
+        cv2.circle(img=plot_image,
                    center=(scalar * j, scalar * i),
                    radius=2,
-                   color=(255, 0, 0),
+                   color=color,
                    thickness=-1)
-        cv2.rectangle(img=color,
+        cv2.rectangle(img=plot_image,
                       pt1=(scalar * (j - 8), scalar * (i - 8)),
                       pt2=(scalar * (j + 8), scalar * (i + 8)),
-                      color=(255, 0, 0),
+                      color=color,
                       thickness=1)
-    pyplot.imshow(color)
-    pyplot.title("Keypoints of varying scales")
-    pyplot.show()
+    if axis is None:
+        pyplot.imshow(plot_image)
+        pyplot.title(title)
+    else:
+        axis.imshow(plot_image)
+        axis.set_title(title)
+
+    if show:
+        pyplot.show()
 
 
 if __name__ == "__main__":
@@ -350,8 +464,14 @@ if __name__ == "__main__":
     parser.add_argument("image",
                         help="Path to image we want to bag of words.",
                         type=Path)
+    parser.add_argument("-f", "--plot-filtered",
+                        help="Whether to display the filtering process.",
+                        action="store_true")
     parser.add_argument("-k", "--plot-keypoints",
                         help="Whether to display image keypoints.",
+                        action="store_true")
+    parser.add_argument("-u", "--plot-update",
+                        help="Whether to display the point update process.",
                         action="store_true")
     parser.add_argument("-p", "--profile",
                         help="Capture profile information of the process.",
@@ -361,4 +481,10 @@ if __name__ == "__main__":
     assert args.image.is_file()
     image = cv2.cvtColor(cv2.imread(str(args.image)), cv2.COLOR_BGR2GRAY)
 
-    main(image, args.profile, args.plot_keypoints)
+    main(
+        image=image,
+        profile=args.profile,
+        plot_update=args.plot_update,
+        plot_filtered=args.plot_filtered,
+        plot_keypoints=args.plot_keypoints,
+    )
