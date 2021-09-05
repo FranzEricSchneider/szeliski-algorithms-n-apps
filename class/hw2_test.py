@@ -274,58 +274,84 @@ class TestDerivative:
         assert numpy.allclose(output[:, 4, 0], 0.0)
 
 
-def test_hessian():
+class TestHessian:
 
-    # Run a couple of simple images through the algorithm
-    blank = numpy.zeros((5, 5), dtype=numpy.uint8)
-    blip = blank.copy()
-    blip[2, 2] = 255
-    output = [hessian(image) for image in [blank, blip]]
+    def test_basic(self):
+        # Run a couple of simple images through the algorithm
+        blank = numpy.zeros((5, 5), dtype=numpy.uint8)
+        blip = blank.copy()
+        blip[2, 2] = 255
+        output = [hessian(image) for image in [blank, blip]]
 
-    # Assert types and sizes
-    for image in output:
-        assert image.dtype == float
-        assert image.shape == (5, 5, 2, 2)
+        # Assert types and sizes
+        for image in output:
+            assert image.dtype == float
+            assert image.shape == (5, 5, 2, 2)
 
-    # The first image should be blank (no derivative)
-    assert numpy.allclose(output[0], numpy.zeros((5, 5, 2, 2)))
+        # The first image should be blank (no derivative)
+        assert numpy.allclose(output[0], numpy.zeros((5, 5, 2, 2)))
 
-    # Extract into components for easier assertions
-    rr = output[1][:, :, 0, 0]
-    rc = output[1][:, :, 1, 0]
-    cc = output[1][:, :, 1, 1]
+        # Extract into components for easier assertions
+        rr = output[1][:, :, 0, 0]
+        rc = output[1][:, :, 1, 0]
+        cc = output[1][:, :, 1, 1]
 
-    # Make statements about the empty locations of the simple hessian
-    for full_row in [0, 1, 3, 4]:
-        assert (rr[full_row, :] == 0).all()
-    for full_x in [0, 2, 4]:
-        assert (rc[full_x, :] == 0).all()
-        assert (rc[:, full_x] == 0).all()
-    for full_column in [0, 1, 3, 4]:
-        assert (cc[:, full_column] == 0).all()
+        # Make statements about the empty locations of the simple hessian
+        for full_row in [0, 1, 3, 4]:
+            assert (rr[full_row, :] == 0).all()
+        for full_x in [0, 2, 4]:
+            assert (rc[full_x, :] == 0).all()
+            assert (rc[:, full_x] == 0).all()
+        for full_column in [0, 1, 3, 4]:
+            assert (cc[:, full_column] == 0).all()
 
-    # I don't have a strong reason for why the hessian takes a certain
-    # value, so I'll just be reasoning on the maximum value without making
-    # statements about its actual value.
-    value = numpy.max(rr)
-    assert numpy.allclose(rr[2, :], numpy.array([value, 0, -value, 0, value]))
-    assert numpy.allclose(rc[1, :], numpy.array([0, value / 2, 0, -value / 2, 0]))
-    assert numpy.allclose(rc[3, :], numpy.array([0, -value / 2, 0, value / 2, 0]))
-    assert numpy.allclose(cc[:, 2], numpy.array([value, 0, -value, 0, value]))
+        # I don't have a strong reason for why the hessian takes a certain
+        # value, so I'll just be reasoning on the maximum value without making
+        # statements about its actual value.
+        value = numpy.max(rr)
+        assert numpy.allclose(rr[2, :], numpy.array([value, 0, -value, 0, value]))
+        assert numpy.allclose(rc[1, :], numpy.array([0, value / 2, 0, -value / 2, 0]))
+        assert numpy.allclose(rc[3, :], numpy.array([0, -value / 2, 0, value / 2, 0]))
+        assert numpy.allclose(cc[:, 2], numpy.array([value, 0, -value, 0, value]))
 
-    # Here's an example of the simple hessian output
-    # rr = [[ 0.   0.   0.   0.   0. ]
-    #       [ 0.   0.   0.   0.   0. ]
-    #       [ 0.5  0.  -0.5  0.   0.5]
-    #       [ 0.   0.   0.   0.   0. ]
-    #       [ 0.   0.   0.   0.   0. ]]
-    # rc = [[ 0.    0.    0.    0.    0.  ]
-    #       [ 0.    0.25  0.   -0.25  0.  ]
-    #       [ 0.    0.    0.    0.    0.  ]
-    #       [ 0.   -0.25  0.    0.25  0.  ]
-    #       [ 0.    0.    0.    0.    0.  ]]
-    # cc = [[ 0.   0.   0.5  0.   0. ]
-    #       [ 0.   0.   0.   0.   0. ]
-    #       [ 0.   0.  -0.5  0.   0. ]
-    #       [ 0.   0.   0.   0.   0. ]
-    #       [ 0.   0.   0.5  0.   0. ]]
+        # Here's an example of the simple hessian output
+        # rr = [[ 0.   0.   0.   0.   0. ]
+        #       [ 0.   0.   0.   0.   0. ]
+        #       [ 0.5  0.  -0.5  0.   0.5]
+        #       [ 0.   0.   0.   0.   0. ]
+        #       [ 0.   0.   0.   0.   0. ]]
+        # rc = [[ 0.    0.    0.    0.    0.  ]
+        #       [ 0.    0.25  0.   -0.25  0.  ]
+        #       [ 0.    0.    0.    0.    0.  ]
+        #       [ 0.   -0.25  0.    0.25  0.  ]
+        #       [ 0.    0.    0.    0.    0.  ]]
+        # cc = [[ 0.   0.   0.5  0.   0. ]
+        #       [ 0.   0.   0.   0.   0. ]
+        #       [ 0.   0.  -0.5  0.   0. ]
+        #       [ 0.   0.   0.   0.   0. ]
+        #       [ 0.   0.   0.5  0.   0. ]]
+
+    def test_edge(self):
+        """
+        When presented with an edge the hessian should have a very high ratio
+        of principal curvatures. (Paper page 12)
+        """
+
+        # Make three types of lines, horizontal, vertical, and diagonal. In
+        # addition, make the diagonal case a ridge, in case that turns out
+        # differently.
+        line0 = numpy.zeros((51, 51), dtype=float)
+        line0[25:, :] = 1.0
+
+        line1 = numpy.zeros((51, 51), dtype=float)
+        line1[:, 25:] = 1.0
+
+        line2 = numpy.diag(numpy.ones(51, dtype=float))
+
+        for line in [line0, line1, line2]:
+            output = hessian(line)
+            # Take the hessian at the point of interest, in the middle
+            ddx = output[25, 25]
+            # 11^2 / 10 is a somewhat arbitrary number, see the paper for
+            # why it is chosen. That is their basic chosen R (ratio) value.
+            assert numpy.trace(ddx)**2 / numpy.linalg.det(ddx) > (11*2 / 10)

@@ -275,7 +275,7 @@ def adjust_and_filter(extrema, diffed, plot_update):
 
         # Calculate the ratio of the principal axes of the hessian. The
         # threshold SHOULD weed out edge-only points
-        if numpy.trace(ddx)**2 / numpy.linalg.det(ddx) < PRINCIPAL_THESHOLD:
+        if numpy.trace(ddx)**2 / numpy.linalg.det(ddx) > PRINCIPAL_THESHOLD:
             edge.append(new_extrema)
             continue
 
