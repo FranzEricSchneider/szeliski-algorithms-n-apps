@@ -7,6 +7,7 @@ from hw2 import (blur,
                  differences,
                  downsample,
                  extremities,
+                 get_quadrants,
                  hessian,
                  )
 
@@ -355,3 +356,59 @@ class TestHessian:
             # 11^2 / 10 is a somewhat arbitrary number, see the paper for
             # why it is chosen. That is their basic chosen R (ratio) value.
             assert numpy.trace(ddx)**2 / numpy.linalg.det(ddx) > (11*2 / 10)
+
+
+@pytest.mark.parametrize("i, j, adjustment, side_len, expected", (
+    (
+        1, 1, numpy.array([0.5, 0.5]), 2,
+        numpy.array([
+            [1,  1,  1, 1],
+            [1, 10, 10, 1],
+            [1, 10, 10, 1],
+            [1,  1,  1, 1],
+        ])
+    ),
+    (
+        1, 1, numpy.array([-0.5, 0.5]), 2,
+        numpy.array([
+            [1, 10, 10, 1],
+            [1, 10, 10, 1],
+            [1,  1,  1, 1],
+            [1,  1,  1, 1],
+        ])
+    ),
+    (
+        1, 1, numpy.array([0.5, -1.5]), 2,
+        numpy.array([
+            [ 1,  1, 1, 1],
+            [10, 10, 1, 1],
+            [10, 10, 1, 1],
+            [ 1,  1, 1, 1],
+        ])
+    ),
+    (
+        2, 2, numpy.array([-0.01, 10.5]), 2,
+        numpy.array([
+            [1, 1,  1, 1 ],
+            [1, 1, 10, 10],
+            [1, 1, 10, 10],
+            [1, 1,  1, 1 ],
+        ])
+    ),
+    (
+        1, 2, numpy.array([0.75, -0.2]), 4,
+        numpy.array([
+            [10, 10, 10, 10, 1, 1],
+            [10, 10, 10, 10, 1, 1],
+            [10, 10, 10, 10, 1, 1],
+            [10, 10, 10, 10, 1, 1],
+            [ 1,  1,  1,  1, 1, 1],
+            [ 1,  1,  1,  1, 1, 1],
+        ])
+    ),
+))
+def test_get_quadrants(i, j, adjustment, side_len, expected):
+    matrix = numpy.ones(expected.shape, dtype=int)
+    output = get_quadrants(matrix, i, j, adjustment, side_len=side_len)
+    output *= 10
+    assert (matrix == expected).all()

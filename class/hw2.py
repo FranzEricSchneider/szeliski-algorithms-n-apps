@@ -36,14 +36,15 @@ BASE_STDDEV = 1.2
 KERNELS = [cv2.getGaussianKernel(KERNEL_SIDE_LEN, scale * BASE_STDDEV)
            for scale in SCALES]
 
-# NUM_OCTAVES = 4
-NUM_OCTAVES = 2
+NUM_OCTAVES = 4
 
-# Global cache of image derivatives, stored by an int tuple of (octave index,
-# image index within the octave).
-DERIVATIVES = {}
+# Global cache of image derivatives, taken on the diffed (DoG) images. Stored
+# by an int tuple of (octave index, image index within the octave).
+DIFF_DERIVATIVES = {}
 # Same story but with hessians (double derivatives)
-HESSIANS = {}
+DIFF_HESSIANS = {}
+# Then the same thing again but caching the blurred images (no hessian needed)
+BLUR_DERIVATIVES = {}
 
 # This is "the standard deviation used for the Gaussian kernel, which is used
 # as weighting function for the auto-correlation matrix." It's absolutely
@@ -53,9 +54,14 @@ HESSIAN_SIGMA = 0.1
 
 # Taken straight from the paper, could be tested
 # CONTRAST_THRESHOLD = 0.03
-CONTRAST_THRESHOLD = 0.003
+CONTRAST_THRESHOLD = 0.01
 PRINCIPAL_RATIO = 10
 PRINCIPAL_THESHOLD = (PRINCIPAL_RATIO + 1)**2 / PRINCIPAL_RATIO
+
+# Fractional threshold where we count multiple competing orientation options.
+# E.g. if the threshold is 0.8, then all orientation peaks above 80% of the
+# max peak are all counted as possible orientations
+ORIENT_THRESHOLD = 0.8
 
 
 def main(image, profile, plot_update, plot_filtered, plot_keypoints):
@@ -102,7 +108,9 @@ def detect_features(original, plot_update, plot_filtered):
     blurred = blur(downsampled, KERNELS)
     diffed = differences(blurred)
     extrema = list(extremities(diffed))
-    valid, low_contrast, edge = adjust_and_filter(extrema, diffed, plot_update)
+    valid, low_contrast, edge = adjust_and_filter(
+        extrema, diffed, blurred, plot_update
+    )
     if plot_filtered:
         print(f"valid: {len(valid)}")
         print(f"low_contrast: {len(low_contrast)}")
@@ -243,7 +251,7 @@ def extremities(diffed):
                         yield vector
 
 
-def adjust_and_filter(extrema, diffed, plot_update):
+def adjust_and_filter(extrema, diffed, blurred, plot_update):
 
     valid = []
     low_contrast = []
@@ -263,25 +271,33 @@ def adjust_and_filter(extrema, diffed, plot_update):
             # overlap and... maybe we're on a line?). I suspect it won't happen
             # much in real life.
             continue
-        new_extrema = [o, k, i_adjusted, j_adjusted]
+
+        # Save the adjusted position, as well as the addition of the detected
+        # orientation of the keypoint
+        new_extrema = [
+            [o, k, i_adjusted, j_adjusted, x_adjusted, orientation]
+            for orientation in detect_orientation(
+                blurred, o, k, i_adjusted, j_adjusted, x_adjusted
+            )
+        ]
 
         # Calculate an interpolated value and filter out if the abs value is
         # too low (formula straight from the paper). This SHOULD weed out low
         # contrast points
         d_adjusted = d + 0.5*dx.dot(x_adjusted)
         if abs(d_adjusted) < CONTRAST_THRESHOLD:
-            low_contrast.append(new_extrema)
+            low_contrast.extend(new_extrema)
             continue
 
         # Calculate the ratio of the principal axes of the hessian. The
         # threshold SHOULD weed out edge-only points
         if numpy.trace(ddx)**2 / numpy.linalg.det(ddx) > PRINCIPAL_THESHOLD:
-            edge.append(new_extrema)
+            edge.extend(new_extrema)
             continue
 
         # Hey, we're here! Past the filter steps! Hypothetically this is a good
         # keypoint
-        valid.append(new_extrema)
+        valid.extend(new_extrema)
 
     return valid, low_contrast, edge
 
@@ -290,8 +306,8 @@ def localize(diffed, o, k, i, j, plot_update):
 
     def get_gradients(o, k, i, j):
         """Helper function to recalculate gradients."""
-        dx = get_cache(diffed, o, k, (i, j), DERIVATIVES, derivative)
-        ddx = get_cache(diffed, o, k, (i, j), HESSIANS, hessian)
+        dx = get_cache(diffed, o, k, (i, j), DIFF_DERIVATIVES, derivative)
+        ddx = get_cache(diffed, o, k, (i, j), DIFF_HESSIANS, hessian)
         inv_ddx = numpy.linalg.inv(ddx)
         # This is straight from the paper. We can calculate the updated
         # position where the derivative against x is 0
@@ -356,12 +372,15 @@ def diff_to_uint8(diff_image, washout=20):
     return numpy.clip(uint8, 0, 255).astype(numpy.uint8)
 
 
-def get_cache(diffed, octave_index, image_index, pixel, cache, function):
+def get_cache(matrices, octave_index, image_index, pixel, cache, function):
     """Helper function to help cache and retrieve derivative calculations."""
     key = (octave_index, image_index)
     if key not in cache:
-        cache[key] = function(diffed[octave_index][image_index])
-    return cache[key][pixel]
+        cache[key] = function(matrices[octave_index][image_index])
+    if pixel is None:
+        return cache[key]
+    else:
+        return cache[key][pixel]
 
 
 def derivative(image):
@@ -370,6 +389,9 @@ def derivative(image):
     Inspired by this. Apparently Scharr is more accurate than Sobel for (3, 3)
     kernels? That said, maybe I should be using something more than (3, 3)?
         https://docs.opencv.org/3.4/d2/d2c/tutorial_sobel_derivatives.html
+
+    This was a very nice explanation of how to derivatize images with some code:
+    https://towardsdatascience.com/image-derivative-8a07a4118550
 
     Arguments:
         image: Greyscale image, theoretically should be one of the DoG images
@@ -414,29 +436,72 @@ def hessian(image):
                        axis=3)
 
 
-def filter_low_contrast(downsampled, extrema):
-    """Discard low-contrast keypoints
+def detect_orientation(blurred, o, k, i, j, x_adjusted):
+    """TODO."""
 
-    Extremely helpful and clear for filtering:
-    https://en.wikipedia.org/wiki/Scale-invariant_feature_transform#Keypoint_localization
+    # First get the gradients of the entire image
+    gradients = get_cache(blurred, o, k, None, BLUR_DERIVATIVES, derivative)
+    # Then select down to just the square section we need, around the pixel of
+    # interest
+    gradients = get_quadrants(gradients, i, j, x_adjusted, side_len=16)
+    # Turn into magnitudes and angles so we can bin by angle
+    magnitudes = numpy.linalg.norm(gradients, axis=2)
+    angles = numpy.arctan2(gradients[:, :, 1], gradients[:, :, 0])
+    # Coerce angles to 0-2pi
+    angles %= 2 * numpy.pi
+    # Scale the weights by a gaussian
+    kernel_1d = cv2.getGaussianKernel(16, SCALES[k] * BASE_STDDEV * 1.5)
+    kernel_2d = numpy.outer(kernel_1d, kernel_1d)
+    magnitudes_scaled = magnitudes * kernel_2d
+    # Bin according to angle, in 36 bins
+    histogram, bin_edges = numpy.histogram(
+        a=angles.flatten(),
+        bins=36,
+        range=(0, 2*numpy.pi),
+        weights=magnitudes_scaled.flatten()
+    )
+    # Detect all regions greater than X% of the maximum
+    for index in numpy.argwhere(
+                histogram > (ORIENT_THRESHOLD * numpy.max(histogram))
+            ).flatten():
+        yield numpy.average(bin_edges[index:index+2])
 
-    Hessian (double-derivative) is defined in my Terms notes. Here's some talk
-    about how it would be computed theoretically:
-    https://www.quora.com/What-are-the-ways-of-calculating-2-x-2-Hessian-matrix-for-2D-image-of-pixel-at-x-y-position
+    # TODO: TEST!
+    # TODO: Display!
 
-    I think we may need to calculate the derivative (convolution) and then the
-    hessian (convolutions) on every pixel of every downsample
 
-    This was a very nice explanation of how to derivatize images with some code:
-    https://towardsdatascience.com/image-derivative-8a07a4118550
+def get_quadrants(matrix, i, j, adjustment, side_len=16):
     """
-    pass
+    Select a square of pixels, sub-dividable into quadrants (assuming a
+    reasonable side_len is used). There is no central pixel here, instead we
+    base the slice on the chosen pixel and the adjustment. The slice is
+    constructed so that (i, j) + adjustment is approximately in the center of
+    the slice.
+
+    Arguments:
+        matrix: ndarray of shape (m, n, ...). It doesn't matter what the shape
+            is past the first two, as we select the pixels whatever they are.
+        i, j: int, pixel indices into (axis0, axis1) of the matrix
+        adjustment: two-element ndarray, float
+        side_len: int, side length of the selected square. Must be divisible
+            by 4. It will likely just always stay at the default
+
+    Returns: matrix of shape (side_len, side_len, ...), selected from the
+        incoming matrix.
+    """
+    radius = side_len // 2
+
+    if adjustment[0] < 0:
+        i -= 1
+    if adjustment[1] < 0:
+        j -= 1
+    return matrix[i-radius+1:i+radius+1, j-radius+1:j+radius+1]
 
 
 def display_keypoints(image, keypoints, axis=None, color=(255, 0, 0), show=True,
                       title="Keypoints of varying scales"):
     plot_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-    for o, k, i, j in keypoints:
+    for o, k, i, j, _, theta in keypoints:
         scalar = (2**o)
         cv2.circle(img=plot_image,
                    center=(scalar * j, scalar * i),
