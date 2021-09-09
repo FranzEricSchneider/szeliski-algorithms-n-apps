@@ -1,9 +1,11 @@
 import numpy
 import pytest
 import types
+from unittest.mock import patch
 
 from hw2 import (blur,
                  derivative,
+                 detect_orientation,
                  differences,
                  downsample,
                  extremities,
@@ -162,7 +164,6 @@ class TestExtremities:
     def test_basic(self, value, empty):
         # Set the middle value of the middle array in the first octave to value
         empty[0][1][8, 8] = value
-        print(empty)
         assert isinstance(extremities(empty), types.GeneratorType)
         assert list(extremities(empty)) == [[0, 1, 8, 8]]
 
@@ -212,11 +213,13 @@ class TestDerivative:
     def test_derivative(self):
         # Run a couple of simple images through the algorithm
         blank = numpy.zeros((5, 5), dtype=numpy.uint8)
-        xline = blank.copy()
-        xline[:, 2] = 255
-        yline = blank.copy()
-        yline[2, :] = 255
-        output = [derivative(image) for image in [blank, xline, yline]]
+        ygrad_line = blank.copy()
+        ygrad_line[:, 2] = 255
+        xgrad_line = blank.copy()
+        xgrad_line[2, :] = 255
+        output = [derivative(image)
+                  for image in [blank, ygrad_line, xgrad_line]]
+        print(output[1])
 
         # Assert types and sizes
         for image in output:
@@ -230,27 +233,28 @@ class TestDerivative:
         for full_column in [0, 2, 4]:
             assert (output[1][:, full_column] == 0).all()
         for half_column in [1, 3]:
-            assert (output[1][:, half_column, 1] == 0).all()
+            assert (output[1][:, half_column, 0] == 0).all()
         for full_row in [0, 2, 4]:
             assert (output[2][full_row, :] == 0).all()
         for half_row in [1, 3]:
-            assert (output[2][half_row, :, 0] == 0).all()
+            assert (output[2][half_row, :, 1] == 0).all()
 
         # I don't have a strong reason for why the derivative takes a certain
         # value, so I'll just be reasoning on the maximum value without making
         # statements about its actual value.
         value = numpy.max(output[1])
-        assert (output[1][:, 1, 0] ==  value).all()
-        assert (output[1][:, 3, 0] == -value).all()
-        assert (output[2][1, :, 1] ==  value).all()
-        assert (output[2][3, :, 1] == -value).all()
+        assert (output[1][:, 1, 1] ==  value).all()
+        assert (output[1][:, 3, 1] == -value).all()
+        assert (output[2][1, :, 0] ==  value).all()
+        assert (output[2][3, :, 0] == -value).all()
 
         # Here's an example of the simple image derivative output
-        # array([[[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]],
-        #        [[0, 0], [ 4080, 0], [0, 0], [-4080, 0], [0, 0]]])
+        # [[[0, 0], [0, 127.5], [0, 0], [0, -127.5], [0, 0]],
+        #  [[0, 0], [0, 127.5], [0, 0], [0, -127.5], [0, 0]],
+        #  [[0, 0], [0, 127.5], [0, 0], [0, -127.5], [0, 0]],
+        #  [[0, 0], [0, 127.5], [0, 0], [0, -127.5], [0, 0]],
+        #  [[0, 0], [0, 127.5], [0, 0], [0, -127.5], [0, 0]]]
+
 
     def test_scaling(self):
         """Make sure the derivative returns reasonable scaling."""
@@ -261,18 +265,19 @@ class TestDerivative:
                              [1, 2, 3, 4, 5],
                              [1, 2, 3, 4, 5]])
         output = derivative(image)
+
         print(output)
 
-        # Check that the x slope is 1 in the center (apparently there's a
+        # Check that the y slope is 1 in the center (apparently there's a
         # buffer behavior that makes it 0 at the axis 0 edges, whatever)
-        assert numpy.allclose(output[:, 1:4, 0], 1.0)
+        assert numpy.allclose(output[:, 1:4, 1], 1.0)
 
-        # Check that it's 0 for all y values
-        assert numpy.allclose(output[:, :, 1], 0.0)
+        # Check that it's 0 for all x values
+        assert numpy.allclose(output[:, :, 0], 0.0)
 
-        # It should be zero for all edge x values
-        assert numpy.allclose(output[:, 0, 0], 0.0)
-        assert numpy.allclose(output[:, 4, 0], 0.0)
+        # It should be zero for all edge y values
+        assert numpy.allclose(output[:, 0, 1], 0.0)
+        assert numpy.allclose(output[:, 4, 1], 0.0)
 
 
 class TestHessian:
@@ -356,6 +361,65 @@ class TestHessian:
             # 11^2 / 10 is a somewhat arbitrary number, see the paper for
             # why it is chosen. That is their basic chosen R (ratio) value.
             assert numpy.trace(ddx)**2 / numpy.linalg.det(ddx) > (11*2 / 10)
+
+
+class TestDetectOrientation:
+    def test_horizontal(self):
+        """A strong horizontal line should show as a orientation along x."""
+        matrix = numpy.zeros((16, 16))
+        matrix[8:, :] = 1.0
+        gradient = derivative(matrix)
+        with patch("hw2.get_cache"):
+            with patch("hw2.get_quadrants") as quadmock:
+                quadmock.return_value = gradient
+                # Interestingly, by mocking out get_cache and get_quadrants,
+                # all arguments to the function are fully useless, and we can
+                # just pass in nothing values.
+                generator = detect_orientation(0, 0, 0, 0, 0, 0)
+                # Check that we received a generator
+                assert isinstance(generator, types.GeneratorType)
+                orientations = list(generator)
+        # We know that we should get only one orientation, and it should be
+        # in the first bin (0 to 1/36)
+        assert len(orientations) == 1
+        assert 0 < orientations[0] < (2 * numpy.pi) / 36
+
+    def test_diagonal(self):
+        """
+        A strong diagonal (upper triangular) should be oriented as (-x, +y).
+        """
+        matrix = numpy.ones((16, 16))
+        matrix = numpy.triu(matrix)
+        gradient = derivative(matrix)
+        with patch("hw2.get_cache"):
+            with patch("hw2.get_quadrants") as quadmock:
+                quadmock.return_value = gradient
+                orientations = list(detect_orientation(0, 0, 0, 0, 0, 0))
+        # We know that we should get only one orientation, and it should be
+        # in the (3pi / 4) bin
+        assert len(orientations) == 1
+        value = 3 * numpy.pi / 4
+        buffer = (2 * numpy.pi) / 36
+        assert value - buffer < orientations[0] < value + buffer
+
+    def test_two_directions(self):
+        """
+        A strong corner should show up as two chosen orientations
+        """
+        matrix = numpy.ones((16, 16))
+        matrix[:8, :8] = 0
+        gradient = derivative(matrix)
+        with patch("hw2.get_cache"):
+            with patch("hw2.get_quadrants") as quadmock:
+                quadmock.return_value = gradient
+                orientations = list(detect_orientation(0, 0, 0, 0, 0, 0))
+        print(orientations)
+        # We know that we should get two orientations, and they should be in
+        # the +x and +y directions
+        assert len(orientations) == 2
+        buffer = (2 * numpy.pi) / 36
+        for value, orientation in zip([0, numpy.pi / 2], orientations):
+            assert value - buffer < orientation < value + buffer
 
 
 @pytest.mark.parametrize("i, j, adjustment, side_len, expected", (

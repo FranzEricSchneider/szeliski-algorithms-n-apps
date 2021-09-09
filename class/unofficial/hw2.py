@@ -38,6 +38,10 @@ KERNELS = [cv2.getGaussianKernel(KERNEL_SIDE_LEN, scale * BASE_STDDEV)
 
 NUM_OCTAVES = 4
 
+# Number of pixels around the edge which we should not detect extremeties in,
+# because SIFT needs a 16x16 grid around the outside
+EDGE_PIX_BUFFER = 8
+
 # Global cache of image derivatives, taken on the diffed (DoG) images. Stored
 # by an int tuple of (octave index, image index within the octave).
 DIFF_DERIVATIVES = {}
@@ -62,6 +66,10 @@ PRINCIPAL_THESHOLD = (PRINCIPAL_RATIO + 1)**2 / PRINCIPAL_RATIO
 # E.g. if the threshold is 0.8, then all orientation peaks above 80% of the
 # max peak are all counted as possible orientations
 ORIENT_THRESHOLD = 0.8
+
+
+# TODO: Check and see if x/y reversing in the derivative changed the adjusted
+# position and the contrast filter adversely.
 
 
 def main(image, profile, plot_update, plot_filtered, plot_keypoints):
@@ -242,8 +250,8 @@ def extremities(diffed):
         for image_index, image in zip(range(1, len(octave)), octave[1:-1]):
             # Go through each pixel
             # TODO: Is this too slow? Do we have a faster alternative?
-            for i in range(8, image.shape[0] - 8):
-                for j in range(8, image.shape[1] - 8):
+            for i in range(EDGE_PIX_BUFFER, image.shape[0] - EDGE_PIX_BUFFER):
+                for j in range(EDGE_PIX_BUFFER, image.shape[1] - EDGE_PIX_BUFFER):
                     # If we have an extreme point, yield
                     vector = [octave_index, image_index, i, j]
                     nmin, nmax = neighbors_minmax(*vector)
@@ -327,8 +335,18 @@ def localize(diffed, o, k, i, j, plot_update):
     # while (abs(x_adjusted) > 0.5).any():
     if (abs(x_adjusted) > 0.5).any():
         # counter += 1
-        i_adjusted_int = int(numpy.round(i + x_adjusted[0]))
-        j_adjusted_int = int(numpy.round(j + x_adjusted[1]))
+        # When we adjust the indices we need to make sure we respect the pixel
+        # buffer around the edge, unfortunately
+        i_adjusted_int = numpy.clip(
+            a=int(numpy.round(i + x_adjusted[0])),
+            a_min=EDGE_PIX_BUFFER,
+            a_max=diffed[o][k].shape[0] - 1 - EDGE_PIX_BUFFER
+        )
+        j_adjusted_int = numpy.clip(
+            a=int(numpy.round(j + x_adjusted[1])),
+            a_min=EDGE_PIX_BUFFER,
+            a_max=diffed[o][k].shape[1] - 1 - EDGE_PIX_BUFFER
+        )
         dx, ddx, x_adjusted = get_gradients(o, k, i_adjusted_int, j_adjusted_int)
     # if counter > 1:
     #     print(f"Hit counter {counter} on original {o, k, i, j}, final"
@@ -393,6 +411,11 @@ def derivative(image):
     This was a very nice explanation of how to derivatize images with some code:
     https://towardsdatascience.com/image-derivative-8a07a4118550
 
+    I *think* that the Scharr kernel defines dx as axis 1, and dy as axis 0. I
+    think this is frustrating and non-intuitive, so I've flipped dx and dy
+    below. This is very hard to track, but I *think* this matches the axes
+    chosen by the hessian because of the order="rc" argument.
+
     Arguments:
         image: Greyscale image, theoretically should be one of the DoG images
 
@@ -407,8 +430,8 @@ def derivative(image):
     # looks something like [[-3, -10, -3], [0, 0, 0], [3, 10, 3]] (abs sum 32)
     scale_factor = 1 / 32
     return numpy.dstack((
-        cv2.Scharr(src=src, ddepth=-1, dx=1, dy=0, scale=scale_factor),
         cv2.Scharr(src=src, ddepth=-1, dx=0, dy=1, scale=scale_factor),
+        cv2.Scharr(src=src, ddepth=-1, dx=1, dy=0, scale=scale_factor),
     ))
 
 
@@ -437,7 +460,28 @@ def hessian(image):
 
 
 def detect_orientation(blurred, o, k, i, j, x_adjusted):
-    """TODO."""
+    """Find most prominent orientations around the point.
+
+    NOTE: My canonical coordinate system is x along axis 0 (down) and y along
+    axis 1 (right) so that z is out of the page. Therefore the angle is defined
+    with 0 along the x axis, looping around counter-clockwise (around positive
+    z) until we hit 2pi at +x again.
+
+    Arguments:
+        blurred: list of lists of images. See docstring for blur() output
+        o: int, index into the first list (octave index)
+        k: int, index into the second set of lists (image index). All the
+            octaves have the same number of images.
+        (i, j): int, pixel position
+        x_adjusted: two-element numpy float array, indicating the direction in
+            which the actual local max is relative to (i, j). Basically a float
+            adjustment to the int pixel.
+
+    Returns: List of orientations (radians, floats, from 0-2pi) that showed up
+        as dominant in the weighted gradient field. There should definitely be
+        one value (the maximum gradient), and there may be more if there were
+        other peaks of 80%+ the value of the max
+    """
 
     # First get the gradients of the entire image
     gradients = get_cache(blurred, o, k, None, BLUR_DERIVATIVES, derivative)
@@ -465,9 +509,6 @@ def detect_orientation(blurred, o, k, i, j, x_adjusted):
                 histogram > (ORIENT_THRESHOLD * numpy.max(histogram))
             ).flatten():
         yield numpy.average(bin_edges[index:index+2])
-
-    # TODO: TEST!
-    # TODO: Display!
 
 
 def get_quadrants(matrix, i, j, adjustment, side_len=16):
@@ -503,16 +544,18 @@ def display_keypoints(image, keypoints, axis=None, color=(255, 0, 0), show=True,
     plot_image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     for o, k, i, j, _, theta in keypoints:
         scalar = (2**o)
+        center=numpy.array([scalar * j, scalar * i])
         cv2.circle(img=plot_image,
-                   center=(scalar * j, scalar * i),
+                   center=tuple(center),
                    radius=2,
                    color=color,
                    thickness=-1)
-        cv2.rectangle(img=plot_image,
-                      pt1=(scalar * (j - 8), scalar * (i - 8)),
-                      pt2=(scalar * (j + 8), scalar * (i + 8)),
-                      color=color,
-                      thickness=1)
+        draw_tilted_square(img=plot_image,
+                           center=center,
+                           theta=theta,
+                           box_r=scalar*8,
+                           color=color)
+
     if axis is None:
         pyplot.imshow(plot_image)
         pyplot.title(title)
@@ -522,6 +565,28 @@ def display_keypoints(image, keypoints, axis=None, color=(255, 0, 0), show=True,
 
     if show:
         pyplot.show()
+
+
+def draw_tilted_square(img, center, theta, box_r, color):
+    vector = box_r * numpy.array([numpy.cos(theta), numpy.sin(theta)])
+    cv2.line(img=img,
+             pt1=tuple(center),
+             pt2=tuple((center + vector).astype(int)),
+             color=color)
+
+    def corner(center, phi, box_r):
+        vector = numpy.array([numpy.cos(phi), numpy.sin(phi)])
+        vector *= numpy.sqrt(2) * box_r
+        return center + vector
+    pts = numpy.array([
+        corner(center, theta + (multiple * numpy.pi / 4), box_r)
+        for multiple in [1, 3, 5, 7]
+    ], dtype=int)
+    cv2.polylines(img=img,
+                  pts=[pts],
+                  isClosed=True,
+                  color=color,
+                  thickness=1)
 
 
 if __name__ == "__main__":
