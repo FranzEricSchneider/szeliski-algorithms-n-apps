@@ -1,6 +1,7 @@
 *.pyc
 *.jpg
 *.png
+*.svg
 *.pdf
 *.zip
 *.npz
